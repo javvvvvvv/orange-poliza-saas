@@ -293,6 +293,47 @@ public sealed class ContpaqiSdkService
                         }
                     }
                     
+                    // Asociar CFDIs
+                    if (p.CfdiUuids != null && p.CfdiUuids.Count > 0)
+                    {
+                        try
+                        {
+                            Type tipoAsoc = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkAsocCFDI")!;
+                            dynamic asoc = Activator.CreateInstance(tipoAsoc)!;
+                            asoc.setSesion(_sesion);
+                            
+                            // Get the GUID of the created Poliza
+                            string guidPoliza = pol.Guid;
+                            asoc.GuidDocumento = guidPoliza;
+                            
+                            foreach (var uuid in p.CfdiUuids)
+                            {
+                                if (!string.IsNullOrWhiteSpace(uuid))
+                                {
+                                    int resAsocAdd = asoc.agregaUUID(uuid);
+                                    if (resAsocAdd != 0)
+                                    {
+                                        _log.LogWarning("Error al hacer agregaUUID({Uuid}): {Res}", uuid, resAsocAdd);
+                                    }
+                                }
+                            }
+                            
+                            int resAsoc = asoc.crea();
+                            if (resAsoc != 0)
+                            {
+                                _log.LogWarning("Error al finalizar asoc.crea() para la póliza: {Res}", resAsoc);
+                            }
+                            else
+                            {
+                                _log.LogInformation("CFDIs asociados exitosamente a la póliza {Guid}", guidPoliza);
+                            }
+                        }
+                        catch (Exception exCFDI)
+                        {
+                            _log.LogError(exCFDI, "Excepción al intentar asociar CFDI a la póliza");
+                        }
+                    }
+
                     creadas++;
                 }
 

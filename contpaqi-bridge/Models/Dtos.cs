@@ -13,7 +13,8 @@ public record PolizaDto(
     int Tipo,
     string Fecha,
     string Concepto,
-    List<MovimientoDto> Movimientos
+    List<MovimientoDto> Movimientos,
+    List<string>? CfdiUuids = null
 );
 
 public record ExportarPolizasRequest(string Empresa, List<PolizaDto> Polizas);
