@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -93,6 +93,7 @@ def _fila_a_movimiento_dict(fila):
         "rfc_contraparte": fila["rfc_contraparte"],
         "cuenta_bancaria_contraparte": fila["cuenta_bancaria_contraparte"],
         "numero_factura": fila["numero_factura"],
+        "cuenta_banco": fila.get("cuenta_banco"),
         "tiene_iva": True,
         "ret_iva": 0.0,
         "ret_isr": 0.0,

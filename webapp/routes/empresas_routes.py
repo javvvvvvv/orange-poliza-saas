@@ -299,9 +299,12 @@ def ajustes_empresa(empresa_id):
         tasa_iva = float(request.form.get("tasa_iva", 0.16))
         tasa_ret_iva = float(request.form.get("tasa_retencion_iva", 0.0))
         tasa_ret_isr = float(request.form.get("tasa_retencion_isr", 0.0))
+        sql_servidor = request.form.get("sql_servidor", "").strip()
+        sql_usuario = request.form.get("sql_usuario", "").strip()
+        sql_password = request.form.get("sql_password", "").strip()
         
-        con.execute("UPDATE empresas SET tasa_iva = ?, tasa_retencion_iva = ?, tasa_retencion_isr = ? WHERE id = ?",
-                    (tasa_iva, tasa_ret_iva, tasa_ret_isr, empresa_id))
+        con.execute("UPDATE empresas SET tasa_iva = ?, tasa_retencion_iva = ?, tasa_retencion_isr = ?, sql_servidor = ?, sql_usuario = ?, sql_password = ? WHERE id = ?",
+                    (tasa_iva, tasa_ret_iva, tasa_ret_isr, sql_servidor, sql_usuario, sql_password, empresa_id))
         con.commit()
         from auth import log_audit
         log_audit(g.usuario["organizacion_id"], g.usuario["id"], "Ajustes Empresa", f"Configuración contable actualizada para '{empresa['nombre']}'")

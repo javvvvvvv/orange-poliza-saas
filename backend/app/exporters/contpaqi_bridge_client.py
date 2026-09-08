@@ -33,7 +33,7 @@ from typing import Any
 import requests
 
 _URL_BASE = os.environ.get("CONTPAQI_BRIDGE_URL", "http://host.docker.internal:5005").rstrip("/")
-_TIMEOUT_SEGUNDOS = float(os.environ.get("CONTPAQI_BRIDGE_TIMEOUT", "30"))
+_TIMEOUT_SEGUNDOS = float(os.environ.get("CONTPAQI_BRIDGE_TIMEOUT", "300"))
 _REINTENTOS = int(os.environ.get("CONTPAQI_BRIDGE_REINTENTOS", "2"))
 _ESPERA_ENTRE_REINTENTOS = 1.5
 

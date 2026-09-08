@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -241,16 +241,24 @@ def conciliar_avanzado(
                 cfdis_ya_usados_ids.add(id(cfdi))
                 break
 
-    cfdis_ya_usados_ids = {id(c) for p in propuestas for c in p.cfdis}
-    cfdis_disponibles_global = [c for c in cfdis if id(c) not in cfdis_ya_usados_ids]
+    cfdi_saldos = {id(c): c.total for c in cfdis}
+    for p in propuestas:
+        for app in p.aplicaciones:
+            cfdi_saldos[id(app.cfdi)] -= app.importe_aplicado
+
+    cfdis_disponibles_global = [c for c in cfdis if cfdi_saldos[id(c)] > 0.01]
+    
+    movs_ya_usados_ids = {id(m) for p in propuestas for m in p.movimientos}
+    movs_restantes = [m for m in movimientos if id(m) not in movs_ya_usados_ids]
 
     import re
-    for idx, mov in movs_sin_grupo:
-        desc_limpia = re.sub(r'[^a-zA-Z0-9]', '', (mov.get("descripcion") or "")).upper()
+    for mov in movs_restantes:
+        desc_limpia = re.sub(r'[^a-zA-Z0-9]', '', f"{mov.get('descripcion', '')}{mov.get('referencia', '')}{mov.get('numero_factura', '')}").upper()
         if not desc_limpia: continue
         
         for cfdi in cfdis_disponibles_global:
-            if id(cfdi) in cfdis_ya_usados_ids:
+            saldo_cfdi = cfdi_saldos[id(cfdi)]
+            if saldo_cfdi <= 0.01:
                 continue
             
             tipo = tipo_por_uuid.get(cfdi.uuid) or clasificar_cfdi(cfdi, rfc_empresa)
@@ -279,7 +287,7 @@ def conciliar_avanzado(
 
             # 2. Busqueda por Nombre del Cliente/Proveedor
             if not match_texto:
-                nombre = cfdi.receptor_nombre if tipo_mov_esperado == "ingreso" else cfdi.emisor_nombre
+                nombre = cfdi.nombre_receptor if tipo_mov_esperado == "ingreso" else cfdi.nombre_emisor
                 if nombre:
                     # Usamos la primera palabra significativa del nombre (minimo 4 letras)
                     partes_nombre = [p for p in re.sub(r'[^a-zA-Z0-9]', ' ', nombre).upper().split() if len(p) >= 4 and p not in ('COMPANIA', 'GRUPO', 'COMERCIAL', 'SERVICIOS', 'SISTEMAS', 'DE', 'CV', 'SA', 'SAPI', 'RL')]
@@ -291,14 +299,15 @@ def conciliar_avanzado(
                                 break
 
             # Si hubo coincidencia de texto, validar montos logicos
-            if match_texto and mov["total"] <= cfdi.total:
+            if match_texto and mov["total"] <= saldo_cfdi + 1.0:
+                importe_aplicar = min(mov["total"], saldo_cfdi)
                 propuestas.append(PropuestaConciliacion(
                     tipo_match="texto_inteligente", confianza=_CFG["cf"].get("sin_rfc", 75) - 5,
-                    motivo=f"Inteligencia Logica: {motivo_texto} El importe del banco cabe en el total del CFDI.",
+                    motivo=f"Inteligencia Logica: {motivo_texto} El importe del banco cabe en el saldo restante del CFDI.",
                     cfdis=[cfdi], movimientos=[mov],
-                    aplicaciones=[AplicacionCFDI(cfdi, mov, mov["total"])],
+                    aplicaciones=[AplicacionCFDI(cfdi, mov, importe_aplicar)],
                 ))
-                cfdis_ya_usados_ids.add(id(cfdi))
+                cfdi_saldos[id(cfdi)] -= importe_aplicar
                 break
 
     return propuestas

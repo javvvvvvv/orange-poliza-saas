@@ -135,7 +135,7 @@ def configuracion(empresa_id):
             "retenciones_activas": request.form.get("retenciones_activas") == "on",
             "base_datos_contpaqi": request.form.get("base_datos_contpaqi") or None,
         }
-        bancos_repo.actualizar_configuracion_iva(empresa_id, datos)
+        print(f"DATOS: {datos}", flush=True); bancos_repo.actualizar_configuracion_iva(empresa_id, datos)
         flash("Configuración guardada.", "exito")
         return redirect(url_for("configuracion.configuracion", empresa_id=empresa_id))
 
@@ -333,6 +333,7 @@ if __name__ == "__main__":
     # no solo desde esta misma máquina.
     puerto = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=puerto, debug=False)
+
 
 
 

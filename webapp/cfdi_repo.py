@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -140,6 +140,8 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
             "tipo": fila["tipo"], "total": fila["total"],
             "fecha": datetime.strptime(fila["fecha"], "%Y-%m-%d"),
             "rfc_contraparte": fila["rfc_contraparte"], "descripcion": fila["descripcion"],
+            "referencia": fila["referencia_bancaria"] or "",
+            "numero_factura": fila["numero_factura"] or "",
         }
         movs_dicts.append(d)
         mapa_mov_id[id(d)] = fila["id"]

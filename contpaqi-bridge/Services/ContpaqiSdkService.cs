@@ -237,15 +237,73 @@ public sealed class ContpaqiSdkService
     /// </summary>
     public Task<RespuestaBridge> CrearPolizasAsync(string nombreInternoEmpresa, List<PolizaDto> polizas)
     {
-        _log.LogWarning(
-            "CrearPolizasAsync invocado para {Empresa} con {N} pólizas, pero no hay " +
-            "método SDK confirmado para escribir pólizas todavía.", nombreInternoEmpresa, polizas.Count);
-        return Task.FromResult(new RespuestaBridge(
-            false,
-            "La creación de pólizas vía SDK en vivo aún no está implementada de forma " +
-            "confiable (no hay método confirmado). Usa la exportación a archivo " +
-            "(.txt/.xls) e impórtala en CONTPAQi mientras se confirma el método real " +
-            "con herramientas/listar_metodos.ps1."));
+        return _dispatcher.EjecutarAsync(() =>
+        {
+            try
+            {
+                AsegurarEmpresaAbierta(nombreInternoEmpresa);
+
+                _log.LogInformation("Creando {N} pólizas en CONTPAQi...", polizas.Count);
+                
+                Type tipoPoliza = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkPoliza")!;
+                Type tipoMov = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkMovimientoPoliza")!;
+                
+                int creadas = 0;
+
+                foreach (var p in polizas)
+                {
+                    dynamic pol = Activator.CreateInstance(tipoPoliza)!;
+                    pol.setSesion(_sesion);
+                    
+                    if (DateTime.TryParse(p.Fecha, out DateTime parsedDate))
+                    {
+                        pol.Fecha = parsedDate.ToString("MM/dd/yyyy");
+                    }
+                    else
+                    {
+                        pol.Fecha = p.Fecha;
+                    }
+                    
+                    pol.Tipo = p.Tipo;
+                    pol.Numero = int.Parse(p.Numero);
+                    pol.Concepto = p.Concepto;
+                    
+                    int resCrea = pol.crea();
+                    if (resCrea != 0)
+                    {
+                        _log.LogError("Error al crear encabezado de póliza {Fecha} {Concepto}: {Error}", p.Fecha, p.Concepto, resCrea);
+                        continue;
+                    }
+
+                    foreach (var m in p.Movimientos)
+                    {
+                        dynamic mov = Activator.CreateInstance(tipoMov)!;
+                        mov.setSesion(_sesion);
+                        
+                        mov.CodigoCuenta = m.Cuenta;
+                        mov.TipoMovto = m.TipoMovto;
+                        mov.Importe = (double)m.Importe;
+                        mov.Concepto = string.IsNullOrEmpty(m.Concepto) ? p.Concepto : m.Concepto;
+                        mov.Referencia = m.Referencia ?? "";
+                        
+                        int resMov = pol.creaMovimiento(mov);
+                        if (resMov != 0)
+                        {
+                            _log.LogError("Error al crear movimiento a cuenta {Cuenta} por {Importe}: {Error}", m.Cuenta, m.Importe, resMov);
+                        }
+                    }
+                    
+                    creadas++;
+                }
+
+                return new RespuestaBridge(true, "Se inyectaron " + creadas + " pólizas exitosamente en CONTPAQi.");
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "Excepción en CrearPolizasAsync");
+                return new RespuestaBridge(false, "Error desconocido: " + ex.Message);
+            }
+        });
     }
 }
 
