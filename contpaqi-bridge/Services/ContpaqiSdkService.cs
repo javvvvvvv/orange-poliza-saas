@@ -79,6 +79,7 @@ public sealed class ContpaqiSdkService
             var tipoSesion = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkSesion")
                 ?? throw new InvalidOperationException("No se encontró SDKCONTPAQNG.TSdkSesion.");
             _sesion = Activator.CreateInstance(tipoSesion)!;
+            _sesion.DespliegaMensajesError = 0;
             _sesion.iniciaConexion();
 
             string usuario = _config["Contpaqi:Usuario"] ?? "";
@@ -159,17 +160,14 @@ public sealed class ContpaqiSdkService
         
         _log.LogInformation("Llamando buscaPrimero");
         int exito = lista.buscaPrimero();
-        System.IO.File.WriteAllText(@"C:\orange-poliza-engine-sdk\bridge_debug.txt", "Exito: " + exito);
-        _log.LogInformation("buscaPrimero termino con exito: " + exito);
-        if (exito == 1 || exito == 0)
+        if (exito == 1)
         {
             do
             {
                 string nombre = lista.Nombre;
                 string baseDatos = lista.NombreBDD;
                 resultado.Add(new EmpresaDto(nombre, baseDatos));
-                System.IO.File.AppendAllText(@"C:\orange-poliza-engine-sdk\bridge_debug.txt", "\nEmpresa: " + nombre);
-            } while (lista.buscaSiguiente() == exito);
+            } while (lista.buscaSiguiente() == 1);
         }
         return resultado;
     });
@@ -305,6 +303,7 @@ public sealed class ContpaqiSdkService
                             // Get the GUID of the created Poliza
                             string guidPoliza = pol.Guid;
                             asoc.GuidDocumento = guidPoliza;
+                            asoc.TipoAsoc = 1;
                             
                             foreach (var uuid in p.CfdiUuids)
                             {

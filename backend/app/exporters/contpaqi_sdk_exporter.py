@@ -50,7 +50,16 @@ def exportar_polizas_via_sdk(movimientos_poliza, nombre_interno_empresa: str) ->
             "fecha": mov.fecha.strftime("%Y-%m-%d"),
             "concepto": mov.descripcion,
             "movimientos": [],
+            "cfdi_uuids": []
         }
+        
+        uuids = []
+        if getattr(mov, "cfdi_uuid", None):
+            uuids.append(mov.cfdi_uuid)
+        if getattr(mov, "facturas", None):
+            for f in mov.facturas:
+                uuids.append(f.uuid)
+        p["cfdi_uuids"] = list(set(uuids))
         for linea in mov.lineas:
             p["movimientos"].append({
                 "cuenta": str(linea.cuenta).replace("-", ""),
