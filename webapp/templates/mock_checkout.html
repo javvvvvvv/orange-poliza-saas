@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
@@ -23,6 +23,8 @@
     </div>
     
     <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="org_id" value="{{ org_id }}">
       <button type="submit" class="block w-full bg-naranja-600 hover:bg-naranja-700 text-white font-medium py-3 rounded-lg transition text-center">
         Simular Pago Exitoso
       </button>

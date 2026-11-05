@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -43,12 +43,12 @@ def sugerir_cuenta_desde_orange(descripcion: str, tipo: str, monto: float) -> st
         client = genai.Client(api_key=api_key)
         prompt = f"""
         Eres 'Orange Intelligence', el asistente contable mexicano experto.
-        Dime sÃ³lo el nombre de la cuenta contable de ultimo nivel (gastos) ideal para este movimiento bancario:
-        DescripciÃ³n: {descripcion}
+        Dime sólo el nombre de la cuenta contable de ultimo nivel (gastos) ideal para este movimiento bancario:
+        Descripción: {descripcion}
         Tipo: {tipo}
         Monto: {monto}
-        Ejemplos: "Gastos de Viaje", "Gastos Financieros", "Seguros y Fianzas", "PapelerÃ­a", "Honorarios".
-        Responde sÃ³lo con el nombre de la cuenta, sin comillas ni explicaciones, maximo 3 palabras.
+        Ejemplos: "Gastos de Viaje", "Gastos Financieros", "Seguros y Fianzas", "Papelería", "Honorarios".
+        Responde sólo con el nombre de la cuenta, sin comillas ni explicaciones, maximo 3 palabras.
         """
         response = client.models.generate_content(
             model='gemini-2.5-flash',

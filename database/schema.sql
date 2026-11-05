@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS configuracion (
 CREATE TABLE IF NOT EXISTS organizaciones (
     id              SERIAL PRIMARY KEY,
     nombre          TEXT NOT NULL,
+    limite_usuarios INTEGER NOT NULL DEFAULT 5,
     estado_suscripcion TEXT NOT NULL DEFAULT 'activa', -- 'activa' | 'suspendida'
     fecha_vencimiento TEXT, -- ISO Date o NULL para lifetime
     creada_en       TEXT NOT NULL DEFAULT (NOW()::text)
@@ -42,9 +43,9 @@ CREATE TABLE IF NOT EXISTS empresas (
     organizacion_id INTEGER NOT NULL REFERENCES organizaciones(id) ON DELETE CASCADE,
     nombre          TEXT NOT NULL,
     rfc             TEXT,
-    tasa_iva        REAL NOT NULL DEFAULT 0.16,
-    tasa_retencion_iva REAL NOT NULL DEFAULT 0.0,
-    tasa_retencion_isr REAL NOT NULL DEFAULT 0.0,
+    tasa_iva        NUMERIC(9,6) NOT NULL DEFAULT 0.16,
+    tasa_retencion_iva NUMERIC(9,6) NOT NULL DEFAULT 0.0,
+    tasa_retencion_isr NUMERIC(9,6) NOT NULL DEFAULT 0.0,
     activa          INTEGER NOT NULL DEFAULT 1,
     creada_en       TEXT NOT NULL DEFAULT (NOW()::text),
 
@@ -61,7 +62,11 @@ CREATE TABLE IF NOT EXISTS empresas (
     -- Nombre interno de base de datos en CONTPAQi (ej. "ctNOMBRE_EMPRESA"),
     -- NO el nombre bonito que ve el usuario. Lo usan el bridge y la
     -- sincronizacion de catalogo para abrir la empresa correcta.
-    base_datos_contpaqi             TEXT
+    base_datos_contpaqi             TEXT,
+    sql_servidor                    TEXT,
+    sql_usuario                     TEXT,
+    sql_password                    TEXT,
+    sql_base_datos                  TEXT
 );
 
 -- Qué usuario puede acceder a qué empresa y con qué rol
@@ -106,6 +111,7 @@ CREATE TABLE IF NOT EXISTS documentos_importados (
     empresa_id      INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
     banco_id        INTEGER REFERENCES bancos(id) ON DELETE SET NULL,
     nombre_archivo  TEXT NOT NULL,
+    hash_sha256     TEXT,              -- Hash SHA-256 para prevenir reimportaciones duplicadas
     ruta_archivo    TEXT,              -- copia persistida, para regenerar el marcado
     nombre_hoja     TEXT,
     tipo_archivo    TEXT NOT NULL,     -- 'excel' | 'pdf_digital' | 'pdf_escaneado' | 'csv' | 'xml'
@@ -181,6 +187,8 @@ CREATE TABLE IF NOT EXISTS polizas (
     referencia      TEXT,
     concepto        TEXT,
     cuadrada        INTEGER NOT NULL DEFAULT 0,
+    enviada_contpaqi INTEGER NOT NULL DEFAULT 0, -- 1 = enviada al SDK o exportada
+    fecha_envio     TEXT,
     aprobada_por    INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
     generada_en     TEXT NOT NULL DEFAULT (NOW()::text),
     UNIQUE (empresa_id, tipo, numero)
@@ -188,11 +196,11 @@ CREATE TABLE IF NOT EXISTS polizas (
 
 CREATE TABLE IF NOT EXISTS poliza_lineas (
     id              SERIAL PRIMARY KEY,
-    poliza_id       INTEGER NOT NULL REFERENCES polizas(id) ON DELETE SET NULL,
+    poliza_id       INTEGER NOT NULL REFERENCES polizas(id) ON DELETE CASCADE,
     orden           INTEGER NOT NULL,
     cuenta          TEXT NOT NULL,
     naturaleza      TEXT NOT NULL,     -- 'cargo' | 'abono'
-    importe         REAL NOT NULL,
+    importe         NUMERIC(18,2) NOT NULL,
     descripcion     TEXT,
     formula_usada   TEXT
 );
@@ -200,7 +208,7 @@ CREATE TABLE IF NOT EXISTS poliza_lineas (
 -- Auditoría: guarda por qué se generó cada póliza, para el "visor de explicación"
 CREATE TABLE IF NOT EXISTS poliza_auditoria (
     id              SERIAL PRIMARY KEY,
-    poliza_id       INTEGER NOT NULL REFERENCES polizas(id) ON DELETE SET NULL,
+    poliza_id       INTEGER NOT NULL REFERENCES polizas(id) ON DELETE CASCADE,
     paso            INTEGER NOT NULL,
     detalle         TEXT NOT NULL
 );
@@ -217,9 +225,9 @@ CREATE TABLE IF NOT EXISTS movimientos (
     descripcion                 TEXT NOT NULL,
     descripcion_normalizada     TEXT NOT NULL,
     tipo                        TEXT NOT NULL,   -- 'ingreso' | 'egreso'
-    total                       REAL NOT NULL,
+    total                       NUMERIC(18,2) NOT NULL,
     moneda                      TEXT NOT NULL DEFAULT 'MXN',
-    tipo_cambio                 REAL NOT NULL DEFAULT 1.0,
+    tipo_cambio                 NUMERIC(18,6) NOT NULL DEFAULT 1.0,
     rfc_contraparte             TEXT,
     cuenta_bancaria_contraparte TEXT,
     referencia_bancaria         TEXT,   -- folio/referencia que trae el banco (informativo)
@@ -242,28 +250,31 @@ CREATE TABLE IF NOT EXISTS movimientos (
 -- ---------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS cfdis (
-    id              SERIAL PRIMARY KEY,
-    empresa_id      INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
-    uuid            TEXT NOT NULL,
-    tipo            TEXT NOT NULL,       -- 'emitido' | 'recibido'
-    rfc_emisor      TEXT NOT NULL,
-    rfc_receptor    TEXT NOT NULL,
-    fecha           TEXT NOT NULL,
-    total           REAL NOT NULL,
-    subtotal        REAL NOT NULL,
-    serie           TEXT,
-    folio           TEXT,
-    archivo_origen  TEXT,
-    importado_en    TEXT NOT NULL DEFAULT (NOW()::text),
+    id                  SERIAL PRIMARY KEY,
+    empresa_id          INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    uuid                TEXT NOT NULL,
+    tipo                TEXT NOT NULL,       -- 'emitido' | 'recibido'
+    rfc_emisor          TEXT NOT NULL,
+    nombre_emisor       TEXT,
+    rfc_receptor        TEXT NOT NULL,
+    nombre_receptor     TEXT,
+    fecha               TEXT NOT NULL,
+    total               NUMERIC(18,2) NOT NULL,
+    subtotal            NUMERIC(18,2) NOT NULL,
+    serie               TEXT,
+    folio               TEXT,
+    uuids_relacionados  TEXT,
+    archivo_origen      TEXT,
+    importado_en        TEXT NOT NULL DEFAULT (NOW()::text),
     UNIQUE (empresa_id, uuid)
 );
 
 CREATE TABLE IF NOT EXISTS cfdi_impuestos (
     id              SERIAL PRIMARY KEY,
     cfdi_id         INTEGER NOT NULL REFERENCES cfdis(id) ON DELETE CASCADE,
-    base            REAL NOT NULL,
-    importe         REAL NOT NULL,
-    tasa            REAL NOT NULL,
+    base            NUMERIC(18,2) NOT NULL,
+    importe         NUMERIC(18,2) NOT NULL,
+    tasa            NUMERIC(9,6) NOT NULL,
     es_retencion    INTEGER NOT NULL DEFAULT 0,  -- 0 = traslado normal, 1 = retención
     tipo_impuesto   TEXT NOT NULL DEFAULT 'IVA'  -- 'IVA' | 'ISR'; solo relevante si es_retencion=1
 );
@@ -279,7 +290,7 @@ CREATE TABLE IF NOT EXISTS cfdi_movimiento (
     grupo_id        TEXT NOT NULL,
     cfdi_id         INTEGER NOT NULL REFERENCES cfdis(id) ON DELETE CASCADE,
     movimiento_id   INTEGER NOT NULL REFERENCES movimientos(id) ON DELETE CASCADE,
-    importe_aplicado REAL NOT NULL,
+    importe_aplicado NUMERIC(18,2) NOT NULL,
     tipo_match      TEXT NOT NULL,   -- 'exacto'|'combinado_facturas'|'combinado_movimientos'|'pago_parcial'|'monto_sin_rfc'
     confianza       INTEGER NOT NULL,
     motivo          TEXT NOT NULL,
@@ -291,6 +302,8 @@ CREATE TABLE IF NOT EXISTS cfdi_movimiento (
 -- Índices de Rendimiento
 CREATE INDEX IF NOT EXISTS idx_movimientos_empresa ON movimientos(empresa_id);
 CREATE INDEX IF NOT EXISTS idx_movimientos_estado ON movimientos(estado_clasificacion);
+CREATE INDEX IF NOT EXISTS idx_movimientos_empresa_estado ON movimientos(empresa_id, estado_clasificacion);
+CREATE INDEX IF NOT EXISTS idx_movimientos_poliza_id ON movimientos(poliza_id);
 CREATE INDEX IF NOT EXISTS idx_polizas_empresa ON polizas(empresa_id);
 CREATE INDEX IF NOT EXISTS idx_polizas_fecha ON polizas(fecha);
 CREATE INDEX IF NOT EXISTS idx_reglas_empresa ON reglas(empresa_id);

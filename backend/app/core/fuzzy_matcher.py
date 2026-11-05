@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -13,8 +13,8 @@
 # autorización expresa y por escrito del autor. Obra protegida conforme a la
 # Ley Federal del Derecho de Autor y tratados internacionales aplicables.
 # ============================================================================
-"""Motor de coincidencia difusa (fuzzy matching) de Ãºltimo recurso;
-ver `rule_engine.py` para dÃ³nde entra en el orden de prioridad."""
+"""Motor de coincidencia difusa (fuzzy matching) de último recurso;
+ver `rule_engine.py` para dónde entra en el orden de prioridad."""
 
 import base64
 import difflib
@@ -25,7 +25,6 @@ from dataclasses import dataclass
 _DIR = os.path.dirname(__file__)
 _LLAVE = b"OC-9k-reglas-2026"
 
-
 def _cargar_mapa() -> dict:
     with open(os.path.join(_DIR, "_k9d2.dat")) as f:
         blob = f.read().strip()
@@ -33,20 +32,16 @@ def _cargar_mapa() -> dict:
     raw = bytes(b ^ _LLAVE[i % len(_LLAVE)] for i, b in enumerate(xored))
     return json.loads(raw)["fz"]
 
-
 _CFG = _cargar_mapa()
 STOPWORDS = set(_CFG["sw"])
 
-
 def _tokens(texto: str) -> set:
     return set(t for t in texto.split() if len(t) >= 3 and t not in STOPWORDS)
-
 
 def similitud_caracteres(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
     return difflib.SequenceMatcher(None, a, b).ratio()
-
 
 def similitud_tokens(a: str, b: str) -> float:
     tokens_a, tokens_b = _tokens(a), _tokens(b)
@@ -55,7 +50,6 @@ def similitud_tokens(a: str, b: str) -> float:
     interseccion = len(tokens_a & tokens_b)
     union = len(tokens_a | tokens_b)
     return interseccion / union if union else 0.0
-
 
 def similitud_abreviatura(palabra_corta: str, palabra_larga: str) -> float:
     if not palabra_corta or not palabra_larga:
@@ -66,7 +60,6 @@ def similitud_abreviatura(palabra_corta: str, palabra_larga: str) -> float:
         return len(palabra_corta) / len(palabra_larga)
     return 0.0
 
-
 def _mejor_score_para_token(token_objetivo: str, tokens_candidatos: list) -> float:
     mejor = 0.0
     for token in tokens_candidatos:
@@ -76,7 +69,6 @@ def _mejor_score_para_token(token_objetivo: str, tokens_candidatos: list) -> flo
         )
         mejor = max(mejor, score)
     return mejor
-
 
 def similitud_combinada(descripcion: str, palabra_clave: str) -> float:
     descripcion = descripcion.strip()
@@ -102,13 +94,11 @@ def similitud_combinada(descripcion: str, palabra_clave: str) -> float:
         
     return round(sum(scores) / len(scores), 4)
 
-
 @dataclass
 class CoincidenciaDifusa:
     texto_comparado: str
     similitud: float
     fuente: str
-
 
 def buscar_mejor_coincidencia_difusa(
     descripcion_normalizada: str,
@@ -121,7 +111,6 @@ def buscar_mejor_coincidencia_difusa(
         if score >= umbral_minimo and (mejor is None or score > mejor.similitud):
             mejor = CoincidenciaDifusa(texto_comparado=texto, similitud=score, fuente=fuente)
     return mejor
-
 
 def confianza_desde_similitud(similitud: float) -> int:
     a, b = _CFG["cf"]

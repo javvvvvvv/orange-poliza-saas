@@ -26,7 +26,6 @@ from werkzeug.security import generate_password_hash
 
 from db import ErrorConexionBD, get_connection
 
-
 def resetear_password(usuario: str, password_nueva: str) -> bool:
     """Regresa True si encontró y actualizó al usuario, False si no existe."""
     usuario_norm = usuario.strip().lower()
@@ -45,7 +44,6 @@ def resetear_password(usuario: str, password_nueva: str) -> bool:
         return True
     finally:
         con.close()
-
 
 def main():
     if len(sys.argv) != 3:
@@ -68,7 +66,6 @@ def main():
         sys.exit(1)
 
     print(f'Contraseña de "{usuario}" actualizada correctamente.')
-
 
 if __name__ == "__main__":
     main()

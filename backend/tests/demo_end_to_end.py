@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -19,15 +19,15 @@ Demo end-to-end de Orange Poliza Engine (fase "motor").
 Este script prueba, con datos de ejemplo y una base SQLite desechable,
 el flujo completo que describimos:
 
-  1. Una empresa tiene un catÃ¡logo de cuentas y dos reglas configuradas
+  1. Una empresa tiene un catálogo de cuentas y dos reglas configuradas
      (una por palabra clave "OXXO", otra por RFC de un proveedor).
   2. Llegan movimientos nuevos de un estado de cuenta.
-  3. El motor de reglas encuentra quÃ© regla aplica (o dice que no
-     encontrÃ³ nada, para clasificaciÃ³n manual).
-  4. El generador de pÃ³lizas calcula los importes con las fÃ³rmulas de
+  3. El motor de reglas encuentra qué regla aplica (o dice que no
+     encontró nada, para clasificación manual).
+  4. El generador de pólizas calcula los importes con las fórmulas de
      cada regla (TOTAL/1.16, IVA, etc.) y valida que cuadre.
-  5. Se imprime la explicaciÃ³n paso a paso, tal como la verÃ­a el usuario
-     en el "visor de explicaciÃ³n" de la pÃ³liza.
+  5. Se imprime la explicación paso a paso, tal como la vería el usuario
+     en el "visor de explicación" de la póliza.
 
 No depende de FastAPI/SQLAlchemy: usa sqlite3 (stdlib) para poder correr
 en cualquier lado sin instalar nada.
@@ -42,10 +42,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app", "core"))
 from rule_engine import Regla, encontrar_regla, normalizar_texto          # noqa: E402
 from policy_generator import LineaPlantilla, generar_poliza                # noqa: E402
 
-
 def main():
     print("=" * 70)
-    print("ORANGE POLIZA ENGINE - Demo del motor de reglas y pÃ³lizas")
+    print("ORANGE POLIZA ENGINE - Demo del motor de reglas y pólizas")
     print("=" * 70)
 
     # -----------------------------------------------------------------
@@ -74,11 +73,11 @@ def main():
 
     reglas = [regla_oxxo, regla_proveedor_abc]
 
-    # Plantillas de cada regla (lo que la regla genera en la pÃ³liza)
+    # Plantillas de cada regla (lo que la regla genera en la póliza)
     plantillas = {
         regla_oxxo.id: [
             LineaPlantilla(cuenta="6010-001", naturaleza="cargo", formula="BASE",
-                            descripcion_linea="Gastos de operaciÃ³n - OXXO"),
+                            descripcion_linea="Gastos de operación - OXXO"),
             LineaPlantilla(cuenta="1180-001", naturaleza="cargo", formula="IVA",
                             descripcion_linea="IVA acreditable - OXXO"),
             LineaPlantilla(cuenta="1020-001", naturaleza="abono", formula="TOTAL",
@@ -90,9 +89,9 @@ def main():
             LineaPlantilla(cuenta="1180-001", naturaleza="cargo", formula="IVA",
                             descripcion_linea="IVA acreditable - Proveedor ABC"),
             LineaPlantilla(cuenta="2105-001", naturaleza="abono", formula="RET_IVA",
-                            descripcion_linea="RetenciÃ³n IVA - Proveedor ABC"),
+                            descripcion_linea="Retención IVA - Proveedor ABC"),
             LineaPlantilla(cuenta="2106-001", naturaleza="abono", formula="RET_ISR",
-                            descripcion_linea="RetenciÃ³n ISR - Proveedor ABC"),
+                            descripcion_linea="Retención ISR - Proveedor ABC"),
             LineaPlantilla(cuenta="1020-001", naturaleza="abono",
                             formula="TOTAL - RET_IVA - RET_ISR",
                             descripcion_linea="Pago transferencia - Proveedor ABC"),
@@ -133,14 +132,14 @@ def main():
     ]
 
     # -----------------------------------------------------------------
-    # 3 y 4. Procesar cada movimiento: encontrar regla + generar pÃ³liza
+    # 3 y 4. Procesar cada movimiento: encontrar regla + generar póliza
     # -----------------------------------------------------------------
 
     resumen = {"automaticos": 0, "sin_regla": 0, "cuadradas": 0, "no_cuadradas": 0}
 
     for i, mov in enumerate(movimientos, start=1):
         print(f"\n--- Movimiento #{i} ---")
-        print(f"DescripciÃ³n original : {mov['descripcion']}")
+        print(f"Descripción original : {mov['descripcion']}")
         print(f"Normalizada          : {normalizar_texto(mov['descripcion'])}")
         print(f"Total                : ${mov['total']:,.2f}")
 
@@ -152,9 +151,9 @@ def main():
 
         if match.regla is None:
             resumen["sin_regla"] += 1
-            print("\n  -> No se generÃ³ pÃ³liza. Este movimiento se manda a "
-                  "clasificaciÃ³n manual (el usuario crea la regla y el "
-                  "sistema la aprende para la prÃ³xima vez).")
+            print("\n  -> No se generó póliza. Este movimiento se manda a "
+                  "clasificación manual (el usuario crea la regla y el "
+                  "sistema la aprende para la próxima vez).")
             continue
 
         resumen["automaticos"] += 1
@@ -168,14 +167,14 @@ def main():
             tasa_iva=0.16,
         )
 
-        print("\nExplicaciÃ³n de la pÃ³liza generada:")
+        print("\nExplicación de la póliza generada:")
         for linea_exp in resultado.explicacion:
             print(f"  {linea_exp}")
 
         if resultado.errores:
             print("\n  Errores encontrados:")
             for err in resultado.errores:
-                print(f"    âœ— {err}")
+                print(f"    ✗ {err}")
 
         if resultado.cuadrada:
             resumen["cuadradas"] += 1
@@ -187,36 +186,35 @@ def main():
     # -----------------------------------------------------------------
 
     print("\n" + "=" * 70)
-    print("RESUMEN DE AUTOMATIZACIÃ“N")
+    print("RESUMEN DE AUTOMATIZACIÓN")
     print("=" * 70)
     print(f"  Movimientos procesados      : {len(movimientos)}")
-    print(f"  Clasificados automÃ¡ticamente: {resumen['automaticos']}")
-    print(f"  Requieren revisiÃ³n manual   : {resumen['sin_regla']}")
-    print(f"  PÃ³lizas cuadradas           : {resumen['cuadradas']}")
-    print(f"  PÃ³lizas NO cuadradas        : {resumen['no_cuadradas']}")
+    print(f"  Clasificados automáticamente: {resumen['automaticos']}")
+    print(f"  Requieren revisión manual   : {resumen['sin_regla']}")
+    print(f"  Pólizas cuadradas           : {resumen['cuadradas']}")
+    print(f"  Pólizas NO cuadradas        : {resumen['no_cuadradas']}")
 
     # -----------------------------------------------------------------
     # Bonus: probar que el esquema SQL de verdad corre en SQLite
     # -----------------------------------------------------------------
     print("\n" + "=" * 70)
-    print("Verificando que database/schema.sql es vÃ¡lido...")
+    print("Verificando que database/schema.sql es válido...")
     print("=" * 70)
     schema_path = os.path.join(os.path.dirname(__file__), "..", "..", "database", "schema.sql")
     con = sqlite3.connect(":memory:")
-    con.execute("PRAGMA foreign_keys = OFF")  # sqlite exige orden de creaciÃ³n estricto; lo relajamos para el demo
+    con.execute("PRAGMA foreign_keys = OFF")  # sqlite exige orden de creación estricto; lo relajamos para el demo
     with open(schema_path, encoding="utf-8") as f:
         sql = f.read()
     try:
         con.executescript(sql)
-        print("âœ“ El esquema se creÃ³ sin errores en una base SQLite en memoria.")
+        print("✓ El esquema se creó sin errores en una base SQLite en memoria.")
         cur = con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tablas = [r[0] for r in cur.fetchall()]
-        print(f"âœ“ Tablas creadas ({len(tablas)}): {', '.join(tablas)}")
+        print(f"✓ Tablas creadas ({len(tablas)}): {', '.join(tablas)}")
     except sqlite3.Error as e:
-        print(f"âœ— Error al crear el esquema: {e}")
+        print(f"✗ Error al crear el esquema: {e}")
     finally:
         con.close()
-
 
 if __name__ == "__main__":
     main()

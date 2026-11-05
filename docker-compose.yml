@@ -1,10 +1,8 @@
-version: '3.8'
-
 services:
   web:
     build: .
     ports:
-      - "8000:8000"
+      - "${ORANGE_WEB_BIND_IP:-127.0.0.1}:8000:8000"
     env_file:
       - .env.docker
     command: >
@@ -14,26 +12,24 @@ services:
     depends_on:
       - db
     volumes:
-      - ./webapp:/app/webapp
-      - ./backend:/app/backend
-      - ./licencia:/app/licencia
+      - ./webapp/uploads:/app/webapp/uploads
+      - ./licencia:/app/licencia:ro
     restart: unless-stopped
-
 
   db:
     image: postgres:16-alpine
+    env_file:
+      - .env.docker
     environment:
-      POSTGRES_USER: orange_user
-      POSTGRES_PASSWORD: orange_pass
-      POSTGRES_DB: orange_poliza
+      POSTGRES_USER: ${ORANGE_DB_USER:-orange_user}
+      POSTGRES_PASSWORD: ${ORANGE_DB_PASSWORD:-change_me_in_env}
+      POSTGRES_DB: ${ORANGE_DB_NAME:-orange_poliza}
     ports:
-      - "5432:5432"
+      - "${ORANGE_DB_BIND_IP:-127.0.0.1}:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
 volumes:
   postgres_data:
-    name: "orange-poliza-engine-copia_postgres_data"
-    external: true
-
+    name: "${ORANGE_PG_VOLUME:-orange-poliza-engine-copia_postgres_data}"

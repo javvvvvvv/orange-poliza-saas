@@ -42,7 +42,6 @@ _TOLERANCIA_AJUSTE = 5.00  # pesos máximos que se autoajustan sin intervención
 _LLAVE = b"OC-7f-poliza-2026"
 _LLAVE_MARCA = hashlib.sha256(b"OrangeCrew-marca-agua-2026").digest()
 
-
 def _cargar_mapa() -> dict:
     with open(os.path.join(_DIR, "_r7f3a.dat")) as f:
         blob = f.read().strip()
@@ -50,14 +49,11 @@ def _cargar_mapa() -> dict:
     raw = bytes(b ^ _LLAVE[i % len(_LLAVE)] for i, b in enumerate(xored))
     return json.loads(raw)
 
-
 _MAPA = _cargar_mapa()
-
 
 def _pos(tipo: str, i: int) -> tuple[int, int]:
     a, b = _MAPA[tipo][i]
     return a, b
-
 
 def _huella(nombre_empresa: Optional[str]) -> str:
     """12 caracteres hex fijos por RFC (marca de agua). Si algún día
@@ -67,17 +63,14 @@ def _huella(nombre_empresa: Optional[str]) -> str:
     dato = (nombre_empresa or "SIN_EMPRESA").strip().upper().encode()
     return hmac.new(_LLAVE_MARCA, dato, hashlib.sha256).hexdigest()[:12]
 
-
 def _nuevo_guid(nombre_empresa: Optional[str] = None) -> str:
     aleatorio = uuid_lib.uuid4().hex
     cuerpo = aleatorio[:20] + _huella(nombre_empresa)
     return f"{cuerpo[0:8]}-{cuerpo[8:12]}-{cuerpo[12:16]}-{cuerpo[16:20]}-{cuerpo[20:32]}".upper()
 
-
 class ErrorPolizaDescuadrada(ValueError):
     """La póliza no cuadra (cargos != abonos, o IVA/base no reconcilian)
     y no se pudo corregir de forma segura con un ajuste automático."""
-
 
 @dataclass
 class CuentasAjuste:
@@ -89,22 +82,18 @@ class CuentasAjuste:
     cuenta_abono: str = "5020604002"
     descripcion: str = "AJUSTE"
 
-
 def _leer_plantilla(nombre: str) -> list[str]:
     ruta = os.path.join(_DIR, nombre)
     with open(ruta, encoding="utf-8") as f:
         return [linea.rstrip("\n") for linea in f]
 
-
 _PLANTILLA_RECIBIDA = _leer_plantilla("_plantilla_recibida.txt")
 _PLANTILLA_EMITIDA = _leer_plantilla("_plantilla_emitida.txt")
-
 
 def _fila_por_tipo(plantilla: list[str], prefijo: str, ocurrencia: int = 0) -> str:
     """Regresa el renglón N que empieza con `prefijo` dentro de la plantilla."""
     encontrados = [l for l in plantilla if l.split(" ", 1)[0] == prefijo]
     return encontrados[ocurrencia]
-
 
 _TPL_P = _fila_por_tipo(_PLANTILLA_RECIBIDA, "P")
 _TPL_M1 = _fila_por_tipo(_PLANTILLA_RECIBIDA, "M1")
@@ -120,19 +109,16 @@ _TPL_E = _fila_por_tipo(_PLANTILLA_EMITIDA, "E")
 _TPL_D = _fila_por_tipo(_PLANTILLA_EMITIDA, "D")
 _TPL_C = _fila_por_tipo(_PLANTILLA_EMITIDA, "C")
 
-
 def _num(valor: float) -> str:
     """Misma representación que usa el layout original: float sin ceros
     de más a la derecha (713422.72, pero 16.0 y no 16.00)."""
     return str(round(float(valor), 2))
-
 
 def _num_tasa(valor: float) -> str:
     """Igual que _num pero con 4 decimales: hay tasas de retención que
     no son exactas a 2 decimales (ej. 10.6667 = 2/3 de 16%, retención de
     IVA por honorarios). Redondear a 2 aquí perdía precisión real."""
     return str(round(float(valor), 4))
-
 
 def _splice(renglon: str, start: int, end: int, valor: str, justify: Literal["left", "right"],
             permitir_truncar: bool = False) -> str:
@@ -152,7 +138,6 @@ def _splice(renglon: str, start: int, end: int, valor: str, justify: Literal["le
     relleno = valor.ljust(ancho) if justify == "left" else valor.rjust(ancho)
     return renglon[:start] + relleno + renglon[end:]
 
-
 def _fila_p(mov: MovimientoPoliza, nombre_empresa: Optional[str]) -> str:
     r = _TPL_P
     r = _splice(r, *_pos("P", 0), mov.fecha.strftime("%Y%m%d"), "left")
@@ -164,7 +149,6 @@ def _fila_p(mov: MovimientoPoliza, nombre_empresa: Optional[str]) -> str:
     r = _splice(r, 40, 140, f"{mov.descripcion}{xml_tag}", "left", permitir_truncar=True)
     r = _splice(r, *_pos("P", 4), _nuevo_guid(nombre_empresa), "left")
     return r
-
 
 # --------------------------------------------------------------------------
 def _fila_m1(mov: MovimientoPoliza, linea, referencia: str, nombre_empresa: Optional[str]) -> str:
@@ -179,14 +163,11 @@ def _fila_m1(mov: MovimientoPoliza, linea, referencia: str, nombre_empresa: Opti
     r = _splice(r, *_pos("M1", 5), mov.fecha.strftime("%Y%m%d"), "left")
     return r
 
-
 def _fila_am(uuid_cfdi: str) -> str:
     return _splice(_TPL_AM, *_pos("AM", 0), uuid_cfdi, "left")
 
-
 def _fila_ad(uuid_cfdi: str) -> str:
     return _splice(_TPL_AD, *_pos("AD", 0), uuid_cfdi, "left")
-
 
 # --------------------------------------------------------------------------
 def _fila_i(mov: MovimientoPoliza, factura: FacturaAplicada, impuesto: ImpuestoPoliza,
@@ -247,10 +228,8 @@ def _fila_i(mov: MovimientoPoliza, factura: FacturaAplicada, impuesto: ImpuestoP
     r = _splice(r, *_pos("I", 19), "1" if impuesto.tipo_impuesto == "ISR" else "2", "left")
     return r, uuid_propio
 
-
 def _fila_w2(impuesto: ImpuestoPoliza) -> str:
     return _splice(_TPL_W2, *_pos("W2", 0), _num(impuesto.base), "left")
-
 
 def _fila_v(mov: MovimientoPoliza, factura: FacturaAplicada, cat: ConfiguracionCatalogoImpuestos) -> str:
     normales = [i for i in factura.impuestos if not i.es_retencion]
@@ -284,7 +263,6 @@ def _fila_v(mov: MovimientoPoliza, factura: FacturaAplicada, cat: ConfiguracionC
     r = _splice(r, *_pos("V", 14), factura.rfc_persona or "", "left")
     return r
 
-
 # --------------------------------------------------------------------------
 def _fila_r(mov: MovimientoPoliza) -> str:
     r = _TPL_R
@@ -292,10 +270,8 @@ def _fila_r(mov: MovimientoPoliza) -> str:
     r = _splice(r, *_pos("R", 1), str(mov.fecha.month), "left")
     return r
 
-
 def _fila_e() -> str:
     return _TPL_E
-
 
 def _fila_d(iva_total: float, total: float) -> str:
     r = _TPL_D
@@ -305,17 +281,14 @@ def _fila_d(iva_total: float, total: float) -> str:
     r = _splice(r, *_pos("D", 3), _num(iva_total), "left")
     return r
 
-
 def _fila_c() -> str:
     return _TPL_C
-
 
 # --------------------------------------------------------------------------
 # Validación de cuadre — nunca se entrega una póliza descuadrada
 # --------------------------------------------------------------------------
 _TOLERANCIA_IVA = 1.00  # el CFDI acumula IVA por concepto, no sobre la base total;
 # el redondeo por línea puede diferir unos centavos del cálculo base x tasa "en bloque"
-
 
 def _validar_iva(mov: MovimientoPoliza) -> None:
     for imp in mov.cfdi_impuestos:
@@ -326,7 +299,6 @@ def _validar_iva(mov: MovimientoPoliza) -> None:
                 f"(base {imp.base} x tasa {imp.tasa} = {esperado}, pero el "
                 f"importe de IVA es {imp.importe})."
             )
-
 
 def _intentar_cuadrar_cargos_abonos(mov: MovimientoPoliza, ajuste: CuentasAjuste) -> None:
     """Si cargos != abonos por una diferencia pequeña (comisión bancaria,
@@ -358,7 +330,6 @@ def _intentar_cuadrar_cargos_abonos(mov: MovimientoPoliza, ajuste: CuentasAjuste
         descripcion=ajuste.descripcion,
         formula_usada="AJUSTE_AUTOMATICO",
     ))
-
 
 # --------------------------------------------------------------------------
 # Construcción de renglones por póliza
@@ -475,7 +446,6 @@ def _construir_filas(movimientos: list[MovimientoPoliza], cat: ConfiguracionCata
         con_cfdi += 1
 
     return filas, con_cfdi, sin_cfdi
-
 
 def exportar_polizas_contpaqi_txt(
     movimientos_poliza: list[MovimientoPoliza],

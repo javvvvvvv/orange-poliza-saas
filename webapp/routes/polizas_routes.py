@@ -1,8 +1,8 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
-# OrganizaciÃ³n: ORANGE CREW
+# Organización: ORANGE CREW
 # Contacto: ILLANJAVIER9@GMAIL.COM
 # ============================================================================
 import os
@@ -23,6 +23,7 @@ class MovimientoContpaqi:
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
+
 from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for, send_file, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -37,16 +38,12 @@ import movimientos_repo
 import reglas_generales_repo
 from rules_repository import RepositorioReglas
 
-
 from excel_importer import (
     importar_excel, ConfiguracionImportacion, FORMATO_COLUMNAS_SEPARADAS,
     FORMATO_COLUMNA_CON_SIGNO, FORMATO_VALOR_ABSOLUTO_Y_TIPO,
     listar_hojas, vista_previa, vista_previa_cruda, detectar_fila_encabezado
 )
 from asignacion_rapida import construir_plantilla_simple, validar_cuentas_iva_configuradas
-
-
-
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOADS_DIR = os.path.join(BASE_DIR, '..', "uploads")
@@ -72,22 +69,25 @@ def _mover_archivo_con_reintentos(origen, destino, intentos=5, espera_segundos=0
 
 polizas_bp = Blueprint('polizas', __name__)
 
-# --- PÃ³lizas ---
+# --- Pólizas ---
 
 @polizas_bp.route("/empresas/<int:empresa_id>/polizas/generar", methods=["POST"])
 @login_required
 @empresa_requerida
 def polizas_generar(empresa_id):
-    con = get_connection()
-    empresa = con.execute("SELECT tasa_iva FROM empresas WHERE id = ?", (empresa_id,)).fetchone()
-    con.close()
-
     inicio_i = request.form.get('inicio_ingreso', type=int)
     inicio_e = request.form.get('inicio_egreso', type=int)
     generadas = movimientos_repo.generar_polizas_pendientes(empresa_id, inicio_ingreso=inicio_i, inicio_egreso=inicio_e)
-    flash(f"{generadas} pÃ³lizas generadas y cuadradas.", "exito")
+    flash(f"{int(generadas)} pólizas generadas y cuadradas.", "exito")
+    descuadres = getattr(generadas, "descuadres", [])
+    if descuadres:
+        ejemplos = " | ".join(d["mensaje"] for d in descuadres[:3])
+        extra = f" (+{len(descuadres) - 3} más)" if len(descuadres) > 3 else ""
+        flash(
+            f"Atención: {len(descuadres)} movimiento(s) no pudieron generar póliza por descuadre: {ejemplos}{extra}",
+            "error",
+        )
     return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
-
 
 @polizas_bp.route("/empresas/<int:empresa_id>/polizas/exportar")
 @login_required
@@ -109,10 +109,188 @@ def polizas_exportar(empresa_id):
     resultado = movimientos_repo.exportar_polizas(empresa_id, ruta_salida)
 
     if "xlsx" in resultado["formato"]:
-        flash(f"Se exportÃ³ en .xlsx en vez de .xls: {resultado['formato']}", "error")
+        flash(f"Se exportó en .xlsx en vez de .xls: {resultado['formato']}", "error")
 
     return send_file(resultado["archivo"], as_attachment=True,
                       download_name=os.path.basename(resultado["archivo"]))
+
+def _construir_movimientos_contpaqi(con, polizas):
+    movimientos_poliza = []
+    map_lineas = {}
+    map_uuids = {}
+    if not polizas:
+        return movimientos_poliza
+
+    p_ids = [str(int(p["id"])) for p in polizas]
+    lineas_raw = con.execute(
+        f"SELECT * FROM poliza_lineas WHERE poliza_id IN ({','.join(p_ids)}) ORDER BY poliza_id, orden"
+    ).fetchall()
+    for l in lineas_raw:
+        map_lineas.setdefault(l["poliza_id"], []).append(l)
+
+    mov_ids = [str(int(p["mov_id"])) for p in polizas if p.get("mov_id") is not None]
+    if mov_ids:
+        cfdi_raw = con.execute(f"""
+            SELECT cm.movimiento_id, c.uuid, c.uuids_relacionados
+            FROM cfdi_movimiento cm
+            JOIN cfdis c ON c.id = cm.cfdi_id
+            WHERE cm.movimiento_id IN ({','.join(mov_ids)}) AND cm.confirmado = 1
+        """).fetchall()
+        for cf in cfdi_raw:
+            uuid_final = cf["uuid"]
+            if cf.get("uuids_relacionados"):
+                uuids_lista = [u.strip() for u in cf["uuids_relacionados"].split(",") if u.strip()]
+                if uuids_lista:
+                    uuid_final = uuids_lista[0]
+            if uuid_final:
+                lista_u = map_uuids.setdefault(cf["movimiento_id"], [])
+                if uuid_final not in lista_u:
+                    lista_u.append(uuid_final)
+
+    for p in polizas:
+        lineas = []
+        for l in map_lineas.get(p["id"], []):
+            lineas.append(LineaPoliza(
+                cuenta=l["cuenta"],
+                naturaleza=l["naturaleza"],
+                importe=l["importe"],
+                descripcion=l["descripcion"],
+                segmento_negocio=""
+            ))
+        uuids_poliza = map_uuids.get(p["mov_id"], []) if p.get("mov_id") else []
+        mov = MovimientoContpaqi(
+            fecha=datetime.strptime(p["fecha"], "%Y-%m-%d"),
+            tipo=p["tipo"],
+            numero_poliza=p["numero"],
+            descripcion=p["concepto"] or f"Póliza {p['numero']}",
+            lineas=lineas,
+            numero_factura=p["referencia"] or "",
+            cfdi_uuid=uuids_poliza[0] if len(uuids_poliza) == 1 else None,
+            facturas=[LineaPoliza(uuid=u) for u in uuids_poliza]
+        )
+        movimientos_poliza.append(mov)
+    return movimientos_poliza
+
+@polizas_bp.route("/empresas/<int:empresa_id>/polizas/sdk_resumen", methods=["GET"])
+@login_required
+@empresa_requerida
+def polizas_sdk_resumen(empresa_id):
+    con = get_connection()
+    empresa = con.execute(
+        "SELECT nombre, base_datos_contpaqi FROM empresas WHERE id = ?", (empresa_id,)
+    ).fetchone()
+    if not empresa:
+        con.close()
+        return {"exito": False, "mensaje": "Empresa no encontrada."}, 404
+
+    nombre_contpaqi = empresa["base_datos_contpaqi"]
+    if not nombre_contpaqi:
+        con.close()
+        return {
+            "exito": False,
+            "mensaje": "Falta configurar la base de datos CONTPAQi para esta empresa (IVA y bancos / Catálogo).",
+        }, 400
+
+    descuadradas = con.execute(
+        "SELECT COUNT(*) FROM polizas WHERE empresa_id = ? AND cuadrada = 0", (empresa_id,)
+    ).fetchone()[0]
+    if descuadradas > 0:
+        con.close()
+        return {
+            "exito": False,
+            "mensaje": f"No se puede exportar: tienes {descuadradas} póliza(s) descuadrada(s). Corrígelas antes de enviar a CONTPAQi.",
+        }, 400
+
+    polizas = con.execute("""
+        SELECT p.id, m.id AS mov_id
+        FROM polizas p
+        LEFT JOIN movimientos m ON m.poliza_id = p.id
+        WHERE p.empresa_id = ?
+        ORDER BY p.tipo, p.numero
+    """, (empresa_id,)).fetchall()
+
+    poliza_ids = [p["id"] for p in polizas]
+    mov_ids = [str(int(p["mov_id"])) for p in polizas if p["mov_id"] is not None]
+    con_cfdi = 0
+    if mov_ids:
+        con_cfdi = con.execute(f"""
+            SELECT COUNT(DISTINCT cm.movimiento_id)
+            FROM cfdi_movimiento cm
+            WHERE cm.movimiento_id IN ({','.join(mov_ids)}) AND cm.confirmado = 1
+        """).fetchone()[0]
+    con.close()
+
+    return {
+        "exito": True,
+        "nombre_contpaqi": nombre_contpaqi,
+        "poliza_ids": poliza_ids,
+        "total_polizas": len(poliza_ids),
+        "con_cfdi": con_cfdi,
+    }
+
+@polizas_bp.route("/empresas/<int:empresa_id>/polizas/exportar_sdk_lote", methods=["POST"])
+@login_required
+@empresa_requerida
+@csrf_protect
+def exportar_polizas_sdk_lote(empresa_id):
+    datos = request.get_json(silent=True) or {}
+    lote_ids = [int(x) for x in (datos.get("poliza_ids") or []) if str(x).isdigit()]
+    if not lote_ids:
+        return {"exito": False, "mensaje": "Lote vacío de pólizas."}, 400
+
+    con = get_connection()
+    empresa = con.execute(
+        "SELECT nombre, base_datos_contpaqi FROM empresas WHERE id = ?", (empresa_id,)
+    ).fetchone()
+    if not empresa or not empresa["base_datos_contpaqi"]:
+        con.close()
+        return {"exito": False, "mensaje": "Falta configurar base_datos_contpaqi."}, 400
+
+    nombre_contpaqi = empresa["base_datos_contpaqi"]
+    ids_str = ",".join(str(i) for i in lote_ids)
+    polizas = con.execute(f"""
+        SELECT p.*, m.id AS mov_id, COALESCE(p.concepto, m.descripcion) AS concepto
+        FROM polizas p
+        LEFT JOIN movimientos m ON m.poliza_id = p.id
+        WHERE p.empresa_id = ? AND p.id IN ({ids_str})
+        ORDER BY p.tipo, p.numero
+    """, (empresa_id,)).fetchall()
+
+    movimientos_poliza = _construir_movimientos_contpaqi(con, polizas)
+    con.close()
+
+    try:
+        res = exportar_polizas_via_sdk(movimientos_poliza, nombre_interno_empresa=nombre_contpaqi)
+        if res.get("exito"):
+            con_up = get_connection()
+            ahora_str = datetime.now().isoformat()
+            con_up.execute(
+                f"UPDATE polizas SET enviada_contpaqi = 1, fecha_envio = ? WHERE id IN ({ids_str})",
+                (ahora_str,),
+            )
+            con_up.commit()
+            con_up.close()
+            return {
+                "exito": True,
+                "enviadas": len(movimientos_poliza),
+                "mensaje": res.get("mensaje", "Lote enviado correctamente."),
+            }
+        return {
+            "exito": False,
+            "mensaje": res.get("mensaje", "Error desconocido al enviar lote al SDK."),
+        }, 500
+    except Exception as e:
+        return {"exito": False, "mensaje": f"Error interno: {e}"}, 500
+
+@polizas_bp.route("/empresas/<int:empresa_id>/polizas/reconciliar_cfdi", methods=["POST"])
+@login_required
+@empresa_requerida
+@csrf_protect
+def reconciliar_cfdi_polizas(empresa_id):
+    res = cfdi_repo.conciliar_existentes(empresa_id)
+    nuevos = len(res.get("conciliados", []))
+    flash(f"Conciliación CFDI ejecutada: {nuevos} movimiento(s) asociado(s) con sus facturas.", "exito")
+    return redirect(url_for("polizas.polizas_revision", empresa_id=empresa_id))
 
 @polizas_bp.route("/empresas/<int:empresa_id>/polizas/exportar_sdk", methods=["POST"])
 @login_required
@@ -128,10 +306,6 @@ def exportar_polizas_sdk(empresa_id):
         con.close()
         return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
 
-    # Antes se tomaba de un campo de texto libre (nombre_empresa_contpaqi),
-    # donde era facil capturar el nombre "bonito" en vez del nombre interno
-    # de base de datos -- eso es justo lo que abreEmpresa() rechaza. Ahora
-    # se usa siempre el valor ya confirmado y guardado en Configuracion.
     nombre_contpaqi = empresa["base_datos_contpaqi"]
     if not nombre_contpaqi:
         flash(
@@ -150,46 +324,29 @@ def exportar_polizas_sdk(empresa_id):
         return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
 
     polizas = con.execute("""
-        SELECT p.*, COALESCE(p.concepto, m.descripcion) AS concepto 
+        SELECT p.*, m.id AS mov_id, COALESCE(p.concepto, m.descripcion) AS concepto 
         FROM polizas p 
         LEFT JOIN movimientos m ON m.poliza_id = p.id 
         WHERE p.empresa_id = ? ORDER BY p.tipo, p.numero
     """, (empresa_id,)).fetchall()
-    
-    movimientos_poliza = []
-    map_lineas = {}
-    if polizas:
-        p_ids = [str(p["id"]) for p in polizas]
-        lineas_raw = con.execute(f"SELECT * FROM poliza_lineas WHERE poliza_id IN ({','.join(p_ids)})").fetchall()
-        for l in lineas_raw:
-            map_lineas.setdefault(l["poliza_id"], []).append(l)
-
-        for p in polizas:
-            lineas = []
-            for l in map_lineas.get(p["id"], []):
-                lineas.append(LineaPoliza(
-                    cuenta=l["cuenta"],
-                    naturaleza=l["naturaleza"],
-                    importe=l["importe"],
-                    descripcion=l["descripcion"],
-                    segmento_negocio=""
-                ))
-            mov = MovimientoContpaqi(
-                fecha=datetime.strptime(p["fecha"], "%Y-%m-%d"),
-                tipo=p["tipo"],
-                numero_poliza=p["numero"],
-                descripcion=p["concepto"] or f"PÃ³liza {p['numero']}",
-                lineas=lineas,
-                numero_factura=p["referencia"] or ""
-            )
-            movimientos_poliza.append(mov)
+    movimientos_poliza = _construir_movimientos_contpaqi(con, polizas)
     con.close()
 
     try:
         res = exportar_polizas_via_sdk(movimientos_poliza, nombre_interno_empresa=nombre_contpaqi)
         
         if res.get("exito"):
-            flash(f"Ã‰xito: {res.get('mensaje')}", "exito")
+            con_up = get_connection()
+            ahora_str = datetime.now().isoformat()
+            p_ids_all = [str(int(p["id"])) for p in polizas]
+            if p_ids_all:
+                con_up.execute(
+                    f"UPDATE polizas SET enviada_contpaqi = 1, fecha_envio = ? WHERE id IN ({','.join(p_ids_all)})",
+                    (ahora_str,),
+                )
+                con_up.commit()
+            con_up.close()
+            flash(f"Éxito: {res.get('mensaje')}", "exito")
             return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
         else:
             flash(f"Error SDK: {res.get('mensaje')}", "error")
@@ -198,8 +355,7 @@ def exportar_polizas_sdk(empresa_id):
         flash(f"Error interno: {e}", "error")
         return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
 
-
-# --- RevisiÃ³n de pÃ³lizas generadas ---
+# --- Revisión de pólizas generadas ---
 
 @polizas_bp.route("/empresas/<int:empresa_id>/polizas")
 @login_required
@@ -207,27 +363,55 @@ def exportar_polizas_sdk(empresa_id):
 def polizas_revision(empresa_id):
     con = get_connection()
     polizas = con.execute(
-        """SELECT p.*, m.descripcion AS descripcion_movimiento
+        """SELECT p.*, m.id AS mov_id, m.descripcion AS descripcion_movimiento, m.numero_factura
            FROM polizas p LEFT JOIN movimientos m ON m.poliza_id = p.id
            WHERE p.empresa_id = ? ORDER BY p.fecha DESC, p.tipo, p.numero""",
         (empresa_id,),
     ).fetchall()
 
+    map_lineas = {}
+    map_explicacion = {}
+    map_cfdis = {}
+    if polizas:
+        p_ids = [str(int(p["id"])) for p in polizas]
+        for l in con.execute(f"SELECT * FROM poliza_lineas WHERE poliza_id IN ({','.join(p_ids)}) ORDER BY poliza_id, orden").fetchall():
+            map_lineas.setdefault(l["poliza_id"], []).append(l)
+        for e in con.execute(f"SELECT poliza_id, detalle FROM poliza_auditoria WHERE poliza_id IN ({','.join(p_ids)}) ORDER BY poliza_id, paso").fetchall():
+            map_explicacion.setdefault(e["poliza_id"], []).append(e["detalle"])
+
+        mov_ids = [str(int(p["mov_id"])) for p in polizas if p["mov_id"] is not None]
+        if mov_ids:
+            cfdi_rows = con.execute(f"""
+                SELECT cm.movimiento_id, cm.importe_aplicado, cm.tipo_match,
+                       c.uuid, c.serie, c.folio, c.total, c.rfc_emisor, c.rfc_receptor, c.nombre_emisor, c.nombre_receptor
+                FROM cfdi_movimiento cm
+                JOIN cfdis c ON c.id = cm.cfdi_id
+                WHERE cm.movimiento_id IN ({','.join(mov_ids)}) AND cm.confirmado = 1
+            """).fetchall()
+            for cf in cfdi_rows:
+                map_cfdis.setdefault(cf["movimiento_id"], []).append(cf)
+
     detalle = {}
+    total_con_cfdi = 0
     for p in polizas:
-        lineas = con.execute(
-            "SELECT * FROM poliza_lineas WHERE poliza_id = ? ORDER BY orden", (p["id"],)
-        ).fetchall()
-        explicacion = con.execute(
-            "SELECT detalle FROM poliza_auditoria WHERE poliza_id = ? ORDER BY paso", (p["id"],)
-        ).fetchall()
-        detalle[p["id"]] = {"lineas": lineas, "explicacion": [e["detalle"] for e in explicacion]}
+        cfdis_p = map_cfdis.get(p["mov_id"], []) if p["mov_id"] else []
+        if cfdis_p:
+            total_con_cfdi += 1
+        detalle[p["id"]] = {
+            "lineas": map_lineas.get(p["id"], []),
+            "explicacion": map_explicacion.get(p["id"], []),
+            "cfdis": cfdis_p,
+        }
+    total_cfdis_empresa = con.execute("SELECT COUNT(*) FROM cfdis WHERE empresa_id = ?", (empresa_id,)).fetchone()[0]
     con.close()
 
-    return render_template("polizas.html", polizas=polizas, detalle=detalle)
-
-
-
+    return render_template(
+        "polizas.html",
+        polizas=polizas,
+        detalle=detalle,
+        total_con_cfdi=total_con_cfdi,
+        total_cfdis_empresa=total_cfdis_empresa,
+    )
 
 @polizas_bp.route("/empresas/<int:empresa_id>/polizas/limpiar", methods=["POST"])
 @login_required
@@ -252,14 +436,21 @@ def movimientos_limpiar(empresa_id):
 @empresa_requerida
 @csrf_protect
 def polizas_editar(empresa_id, poliza_id):
-    datos = request.get_json()
+    datos = request.get_json(silent=True)
     if not datos or "lineas" not in datos:
         return {"exito": False, "mensaje": "Datos invalidos"}, 400
         
     try:
-        movimientos_repo.actualizar_poliza(poliza_id, datos["lineas"])
-        return {"exito": True, "mensaje": "Poliza actualizada correctamente."}
+        res = movimientos_repo.actualizar_poliza(poliza_id, datos["lineas"], empresa_id=empresa_id)
+        return {
+            "exito": True,
+            "mensaje": "Poliza actualizada correctamente.",
+            "cuadrada": res["cuadrada"],
+            "cargos": float(res["cargos"]),
+            "abonos": float(res["abonos"]),
+            "diferencia": float(res["diferencia"]),
+        }
+    except ValueError as e:
+        return {"exito": False, "mensaje": str(e)}, 404
     except Exception as e:
         return {"exito": False, "mensaje": str(e)}, 500
-
-

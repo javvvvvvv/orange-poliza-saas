@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -87,7 +87,7 @@ def reactivar_org(org_id):
     con.execute("UPDATE organizaciones SET estado_suscripcion = 'activa', fecha_vencimiento = ? WHERE id = ?", (nueva_fecha, org_id))
     con.commit()
     con.close()
-    flash("Despacho reactivado por 30 dÃ­as.", "exito")
+    flash("Despacho reactivado por 30 días.", "exito")
     return redirect(url_for("saas.saas_dashboard"))
 
 @saas_bp.route("/saas/organizaciones/<int:org_id>/renombrar", methods=["POST"])

@@ -31,7 +31,6 @@ from cfdi_matcher import clasificar_cfdi, _dentro_de_ventana
 _DIR = os.path.dirname(__file__)
 _LLAVE = b"OC-4c-cfdi-2026"
 
-
 def _cargar_mapa() -> dict:
     with open(os.path.join(_DIR, "_c4b1.dat")) as f:
         blob = f.read().strip()
@@ -39,16 +38,13 @@ def _cargar_mapa() -> dict:
     raw = bytes(b ^ _LLAVE[i % len(_LLAVE)] for i, b in enumerate(xored))
     return json.loads(raw)["ca"]
 
-
 _CFG = _cargar_mapa()
-
 
 @dataclass
 class AplicacionCFDI:
     cfdi: CFDI
     movimiento: dict
     importe_aplicado: float
-
 
 @dataclass
 class PropuestaConciliacion:
@@ -59,7 +55,6 @@ class PropuestaConciliacion:
     movimientos: list = field(default_factory=list)
     aplicaciones: list = field(default_factory=list)  # list[AplicacionCFDI]
 
-
 def _combinaciones_que_suman(indices_y_montos, objetivo, tolerancia=0.01, max_items=None, max_candidatos=None):
     max_items = _CFG["max_items"] if max_items is None else max_items
     max_candidatos = _CFG["max_cand"] if max_candidatos is None else max_candidatos
@@ -69,7 +64,6 @@ def _combinaciones_que_suman(indices_y_montos, objetivo, tolerancia=0.01, max_it
             if abs(sum(m for _, m in combo) - objetivo) <= tolerancia:
                 return [i for i, _ in combo]
     return None
-
 
 def conciliar_avanzado(
     cfdis: list[CFDI],
@@ -84,6 +78,44 @@ def conciliar_avanzado(
     propuestas = []
     tipo_por_uuid = tipo_por_uuid or {}
 
+    import re
+    movs_conciliados_por_folio = set()
+    for i, mov in enumerate(movimientos):
+        num_fact_raw = str(mov.get("numero_factura") or "").strip()
+        num_fact_limpio = re.sub(r'[^a-zA-Z0-9]', '', num_fact_raw).upper()
+        if not num_fact_limpio:
+            continue
+        for cfdi in cfdis:
+            tipo = tipo_por_uuid.get(cfdi.uuid) or clasificar_cfdi(cfdi, rfc_empresa)
+            if tipo != "desconocido":
+                tipo_mov_esperado = "ingreso" if tipo == "emitido" else "egreso"
+                if mov["tipo"] != tipo_mov_esperado:
+                    continue
+            folio_limpio = re.sub(r'[^a-zA-Z0-9]', '', cfdi.folio or "").upper()
+            serie_limpia = re.sub(r'[^a-zA-Z0-9]', '', cfdi.serie or "").upper()
+            uuid_limpio = re.sub(r'[^a-zA-Z0-9]', '', cfdi.uuid or "").upper()
+
+            coincide_folio = False
+            if folio_limpio and num_fact_limpio == folio_limpio:
+                coincide_folio = True
+            elif (serie_limpia or folio_limpio) and num_fact_limpio == (serie_limpia + folio_limpio):
+                coincide_folio = True
+            elif len(num_fact_limpio) >= 8 and (num_fact_limpio == uuid_limpio or uuid_limpio.startswith(num_fact_limpio)):
+                coincide_folio = True
+
+            if coincide_folio:
+                importe_aplicar = min(float(mov["total"]), float(cfdi.total)) if cfdi.total else float(mov["total"])
+                propuestas.append(PropuestaConciliacion(
+                    tipo_match="exacto",
+                    confianza=_CFG["cf"].get("exacto", 100),
+                    motivo=f"Asociación directa por número de factura ({cfdi.serie or ''}{cfdi.folio or ''}) en el movimiento.",
+                    cfdis=[cfdi],
+                    movimientos=[mov],
+                    aplicaciones=[AplicacionCFDI(cfdi, mov, importe_aplicar)],
+                ))
+                movs_conciliados_por_folio.add(id(mov))
+                break
+
     grupos = {}  # (tipo_mov_esperado, rfc_contraparte) -> {"cfdis": [...], "movs": [(idx, mov), ...]}
 
     for cfdi in cfdis:
@@ -97,6 +129,8 @@ def conciliar_avanzado(
 
     movs_sin_grupo = []
     for i, mov in enumerate(movimientos):
+        if id(mov) in movs_conciliados_por_folio:
+            continue
         rfc_mov = (mov.get("rfc_contraparte") or "").strip().upper()
         clave = (mov["tipo"], rfc_mov) if rfc_mov else None
         if clave and clave in grupos:
@@ -140,7 +174,7 @@ def conciliar_avanzado(
                     tipo_match="combinado_facturas", confianza=_CFG["cf"]["n_fact"],
                     motivo=(f"La suma de {len(cfdis_combo)} facturas ({folios}) coincide "
                             f"exactamente con este movimiento (${mov['total']:,.2f}). "
-                            f"Parece un pago que cubriÃ³ varias facturas juntas."),
+                            f"Parece un pago que cubrió varias facturas juntas."),
                     cfdis=cfdis_combo, movimientos=[mov],
                     aplicaciones=[AplicacionCFDI(c, mov, c.total) for c in cfdis_combo],
                 ))
@@ -162,7 +196,7 @@ def conciliar_avanzado(
 
                 if dispersion_dias <= _CFG["disp_dias"]:
                     explicacion = (
-                        "ComÃºn cuando varios cargos (ej. comisiones bancarias) se "
+                        "Común cuando varios cargos (ej. comisiones bancarias) se "
                         "facturan juntos una vez al mes."
                     )
                 else:

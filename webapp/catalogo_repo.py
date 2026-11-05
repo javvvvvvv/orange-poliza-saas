@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -34,7 +34,7 @@ def importar_desde_excel(empresa_id, ruta_archivo, nombre_hoja=None):
     elif len(df.columns) >= 2:
         idx_cuenta, idx_desc = 0, 1
     else:
-        raise ValueError("El archivo debe tener al menos dos columnas: cuenta y descripciÃ³n.")
+        raise ValueError("El archivo debe tener al menos dos columnas: cuenta y descripción.")
 
     filas = []
     for _, fila in df.iterrows():

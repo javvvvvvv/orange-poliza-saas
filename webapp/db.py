@@ -15,34 +15,38 @@
 """
 Capa de acceso a datos de Orange Poliza Engine sobre PostgreSQL.
 
-Antes este módulo usaba sqlite3 con un archivo local (orange_poliza.db).
-Eso es lo que causaba "usuario o contraseña incorrectos" al correr la
-app en varias computadoras: cada máquina creaba su propio archivo
-.db vacío. Ahora todas las instancias de la app se conectan al MISMO
-servidor PostgreSQL (definido por variables de entorno), así que
-comparten la misma base sin importar desde qué computadora se abra
-el navegador.
-
-Para no tener que reescribir cada consulta de los repositorios
-(webapp/*.py, backend/app/core/rules_repository.py) al migrar de
-sqlite3 a psycopg2, este módulo expone una capa de compatibilidad:
-
-  - con.execute("... WHERE id = ?", (valor,))   -> placeholders '?' igual que antes
-  - cur.lastrowid                                -> igual que antes, vía RETURNING id
+Expone una capa de compatibilidad y manejo seguro del pool:
+  - con.execute("... WHERE id = ?", (valor,))   -> placeholders '?'
+  - cur.lastrowid                                -> vía RETURNING id
   - fila["columna"] y fila[0]                    -> igual que sqlite3.Row
-  - con.executescript(sql)                       -> para el schema.sql con varias sentencias
-
-Así, el resto del proyecto no cambia; solo esta capa.
+  - with get_connection() as con:                -> context manager que hace
+                                                    commit/rollback y devuelve
+                                                    la conexión al pool siempre
 """
 
+from contextlib import contextmanager
+from decimal import Decimal
 import os
 import re
+import sys
 
 import psycopg2
+import psycopg2.extensions
+from psycopg2.pool import ThreadedConnectionPool
 from dotenv import load_dotenv
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+CORE_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "backend", "app", "core"))
+if CORE_DIR not in sys.path:
+    sys.path.insert(0, CORE_DIR)
+
+try:
+    from formula_engine import MontoDecimal
+    psycopg2.extensions.register_adapter(MontoDecimal, psycopg2.extensions.Decimal)
+except Exception:
+    MontoDecimal = Decimal
 
 SCHEMA_PATH = os.path.join(BASE_DIR, "..", "database", "schema.sql")
 
@@ -52,12 +56,10 @@ _TABLAS_SIN_ID = {"usuario_empresa"}
 
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)
 
-
 class ErrorConexionBD(Exception):
     """Se lanza cuando falta configuración de conexión a PostgreSQL o el
     servidor no responde, con un mensaje entendible para el usuario final."""
     pass
-
 
 def _config_desde_entorno() -> dict:
     requeridas = ("ORANGE_DB_HOST", "ORANGE_DB_NAME", "ORANGE_DB_USER", "ORANGE_DB_PASSWORD")
@@ -78,18 +80,20 @@ def _config_desde_entorno() -> dict:
         "connect_timeout": 5,
     }
 
+def _normalizar_valor(v):
+    if isinstance(v, Decimal) and not isinstance(v, MontoDecimal):
+        return MontoDecimal(v)
+    return v
 
 class Row:
     """Emula sqlite3.Row: accesible por nombre (fila["columna"]) o por
-    posición (fila[0]), e iterable/convertible con dict(fila). Se usa
-    en vez del RealDictCursor de psycopg2 porque varias consultas del
-    proyecto (ej. SELECT COUNT(*)) leen el resultado por posición."""
+    posición (fila[0]), e iterable/convertible con dict(fila)."""
 
     __slots__ = ("_valores", "_columnas")
 
     def __init__(self, columnas, valores):
         self._columnas = columnas
-        self._valores = dict(zip(columnas, valores))
+        self._valores = {col: _normalizar_valor(val) for col, val in zip(columnas, valores)}
 
     def __getitem__(self, clave):
         if isinstance(clave, int):
@@ -114,13 +118,10 @@ class Row:
     def __repr__(self):
         return f"Row({self._valores!r})"
 
-
 def _traducir_placeholders(sql: str) -> str:
     """Los repositorios están escritos con '?' al estilo sqlite3;
-    psycopg2 espera '%s'. Ninguna consulta del proyecto trae literales
-    con '?', así que el reemplazo directo es seguro."""
+    psycopg2 espera '%s'."""
     return sql.replace("?", "%s")
-
 
 class Cursor:
     def __init__(self, cursor_real):
@@ -164,11 +165,24 @@ class Cursor:
     def close(self):
         self._cursor.close()
 
-
 class Connection:
     def __init__(self, con_real):
         self._con = con_real
+        self._cerrada = False
         self.row_factory = None  # solo por compatibilidad; Row siempre está activo
+
+    def __enter__(self) -> "Connection":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is not None:
+                self.rollback()
+            else:
+                self.commit()
+        finally:
+            self.close()
+        return False
 
     def cursor(self) -> Cursor:
         return Cursor(self._con.cursor())
@@ -188,27 +202,40 @@ class Connection:
             cur.close()
 
     def commit(self):
-        self._con.commit()
+        if not self._cerrada:
+            self._con.commit()
 
     def rollback(self):
-        self._con.rollback()
+        if not self._cerrada:
+            try:
+                self._con.rollback()
+            except Exception:
+                pass
 
     def close(self):
+        if self._cerrada:
+            return
+        self._cerrada = True
         if _pool is not None:
-            _pool.putconn(self._con)
+            try:
+                _pool.putconn(self._con)
+            except Exception:
+                pass
         else:
-            self._con.close()
+            try:
+                self._con.close()
+            except Exception:
+                pass
 
+    def __del__(self):
+        # Salvaguarda final: si una referencia sale de alcance sin haberse
+        # cerrado explícitamente, la devuelve al pool para evitar fugas.
+        try:
+            self.close()
+        except Exception:
+            pass
 
 def _texto_legible(excepcion: Exception) -> str:
-    """En Windows, cuando falla la conexión (ej. el servicio de
-    PostgreSQL apagado, o el firewall bloqueando el puerto), el
-    mensaje de error del sistema operativo viene en el idioma y la
-    codificación de Windows (cp1252 en Windows en español), pero
-    psycopg2 intenta decodificarlo como UTF-8 y lanza un
-    UnicodeDecodeError que tapa el mensaje real. Aquí se recupera ese
-    mensaje probando varias codificaciones en vez de dejar pasar el
-    traceback críptico."""
     crudo = getattr(excepcion, "object", None)
     if isinstance(crudo, (bytes, bytearray)):
         for codificacion in ("utf-8", "cp1252", "latin-1"):
@@ -218,9 +245,6 @@ def _texto_legible(excepcion: Exception) -> str:
                 continue
         return repr(bytes(crudo))
     return str(excepcion) or repr(excepcion)
-
-
-from psycopg2.pool import ThreadedConnectionPool
 
 _pool = None
 
@@ -237,34 +261,42 @@ def get_connection() -> Connection:
                 "puerto 5432 esté abierto en el Firewall, y que webapp/.env tenga "
                 f"los datos correctos. Detalle: {_texto_legible(e)}"
             ) from e
-    
+
     con = _pool.getconn()
     return Connection(con)
 
+@contextmanager
+def connection_scope():
+    """Context manager explícito para operaciones de base de datos."""
+    con = get_connection()
+    try:
+        yield con
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
 def inicializar_db():
     """Crea las tablas que falten (CREATE TABLE IF NOT EXISTS) y agrega
-    columnas nuevas a instalaciones existentes. Segura de llamar en
-    cada arranque del servidor."""
-    con = get_connection()
-    with open(SCHEMA_PATH, encoding="utf-8") as f:
-        con.executescript(f.read())
-    con.commit()
-    _aplicar_migraciones(con)
-    con.commit()
-    con.close()
-
+    columnas nuevas / migra tipos en instalaciones existentes."""
+    with get_connection() as con:
+        with open(SCHEMA_PATH, encoding="utf-8") as f:
+            con.executescript(f.read())
+        con.commit()
+        _aplicar_migraciones(con)
 
 def _aplicar_migraciones(con: Connection):
-    """Columnas agregadas después de la versión inicial del esquema.
-    ADD COLUMN IF NOT EXISTS es idempotente en PostgreSQL, así que no
-    hace falta revisar antes si la columna ya existe."""
+    """Columnas agregadas y migración de REAL a NUMERIC para precisión decimal."""
     migraciones = [
-        ("empresas", "tasa_retencion_iva", "REAL NOT NULL DEFAULT 0.0"),
-        ("empresas", "tasa_retencion_isr", "REAL NOT NULL DEFAULT 0.0"),
+        ("organizaciones", "limite_usuarios", "INTEGER NOT NULL DEFAULT 5"),
+        ("organizaciones", "estado_suscripcion", "TEXT NOT NULL DEFAULT 'activa'"),
+        ("organizaciones", "fecha_vencimiento", "TEXT"),
+        ("empresas", "tasa_retencion_iva", "NUMERIC(9,6) NOT NULL DEFAULT 0.0"),
+        ("empresas", "tasa_retencion_isr", "NUMERIC(9,6) NOT NULL DEFAULT 0.0"),
         ("empresas", "base_datos_contpaqi", "TEXT"),
         ("documentos_importados", "ruta_archivo", "TEXT"),
-
         ("documentos_importados", "nombre_hoja", "TEXT"),
         ("movimientos", "fila_original", "INTEGER"),
         ("movimientos", "afectable_impuestos", "INTEGER"),
@@ -275,7 +307,12 @@ def _aplicar_migraciones(con: Connection):
         ("empresas", "sql_password", "TEXT"),
         ("empresas", "sql_base_datos", "TEXT"),
         ("polizas", "concepto", "TEXT"),
+        ("cfdis", "nombre_emisor", "TEXT"),
+        ("cfdis", "nombre_receptor", "TEXT"),
         ("cfdis", "uuids_relacionados", "TEXT"),
+        ("documentos_importados", "hash_sha256", "TEXT"),
+        ("polizas", "enviada_contpaqi", "INTEGER NOT NULL DEFAULT 0"),
+        ("polizas", "fecha_envio", "TEXT"),
     ]
     cur = con.cursor()
 
@@ -292,15 +329,93 @@ def _aplicar_migraciones(con: Connection):
 
     for tabla, columna, tipo in migraciones:
         cur.execute(f"ALTER TABLE {tabla} ADD COLUMN IF NOT EXISTS {columna} {tipo}")
+
+    # Migración idempotente de columnas REAL (float4) a NUMERIC exacto (C1)
+    conversiones_numeric = [
+        ("empresas", "tasa_iva", "NUMERIC(9,6)", 6),
+        ("empresas", "tasa_retencion_iva", "NUMERIC(9,6)", 6),
+        ("empresas", "tasa_retencion_isr", "NUMERIC(9,6)", 6),
+        ("poliza_lineas", "importe", "NUMERIC(18,2)", 2),
+        ("movimientos", "total", "NUMERIC(18,2)", 2),
+        ("movimientos", "tipo_cambio", "NUMERIC(18,6)", 6),
+        ("cfdis", "total", "NUMERIC(18,2)", 2),
+        ("cfdis", "subtotal", "NUMERIC(18,2)", 2),
+        ("cfdi_impuestos", "base", "NUMERIC(18,2)", 2),
+        ("cfdi_impuestos", "importe", "NUMERIC(18,2)", 2),
+        ("cfdi_impuestos", "tasa", "NUMERIC(9,6)", 6),
+        ("cfdi_movimiento", "importe_aplicado", "NUMERIC(18,2)", 2),
+    ]
+    for tabla, columna, tipo_sql, escala in conversiones_numeric:
+        cur.execute(
+            """SELECT data_type FROM information_schema.columns
+               WHERE table_schema = 'public' AND table_name = ? AND column_name = ?""",
+            (tabla, columna),
+        )
+        info = cur.fetchone()
+        if info and info[0].lower() != "numeric":
+            cur.execute(
+                f"ALTER TABLE {tabla} ALTER COLUMN {columna} TYPE {tipo_sql} "
+                f"USING ROUND({columna}::numeric, {escala})"
+            )
+
+    # Migrar todas las llaves foráneas de cascada del esquema a ON DELETE CASCADE
+    fks_cascade = [
+        ("usuarios", "organizacion_id", "organizaciones", "id"),
+        ("empresas", "organizacion_id", "organizaciones", "id"),
+        ("usuario_empresa", "usuario_id", "usuarios", "id"),
+        ("usuario_empresa", "empresa_id", "empresas", "id"),
+        ("cuentas_catalogo", "empresa_id", "empresas", "id"),
+        ("bancos", "empresa_id", "empresas", "id"),
+        ("documentos_importados", "empresa_id", "empresas", "id"),
+        ("reglas", "empresa_id", "empresas", "id"),
+        ("regla_palabras_clave", "regla_id", "reglas", "id"),
+        ("plantilla_movimientos", "regla_id", "reglas", "id"),
+        ("reglas_generales", "empresa_id", "empresas", "id"),
+        ("polizas", "empresa_id", "empresas", "id"),
+        ("poliza_lineas", "poliza_id", "polizas", "id"),
+        ("poliza_auditoria", "poliza_id", "polizas", "id"),
+        ("movimientos", "empresa_id", "empresas", "id"),
+        ("cfdis", "empresa_id", "empresas", "id"),
+        ("cfdi_impuestos", "cfdi_id", "cfdis", "id"),
+        ("cfdi_movimiento", "cfdi_id", "cfdis", "id"),
+        ("cfdi_movimiento", "movimiento_id", "movimientos", "id"),
+        ("memoria_ml", "empresa_id", "empresas", "id"),
+        ("memoria_ml", "regla_asignada_id", "reglas", "id"),
+        ("auditoria_despacho", "organizacion_id", "organizaciones", "id"),
+    ]
+    for tabla_fk, col_fk, tabla_ref, col_ref in fks_cascade:
+        cur.execute(
+            """SELECT c.conname
+               FROM pg_constraint c
+               JOIN pg_class t ON c.conrelid = t.oid
+               JOIN pg_namespace n ON t.relnamespace = n.oid
+               JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+               WHERE n.nspname = 'public'
+                 AND t.relname = ?
+                 AND a.attname = ?
+                 AND c.contype = 'f'
+                 AND c.confdeltype <> 'c'""",
+            (tabla_fk, col_fk),
+        )
+        for fk_row in cur.fetchall():
+            conname = fk_row[0]
+            cur.execute(f"ALTER TABLE {tabla_fk} DROP CONSTRAINT {conname}")
+            cur.execute(
+                f"ALTER TABLE {tabla_fk} ADD CONSTRAINT {conname} "
+                f"FOREIGN KEY ({col_fk}) REFERENCES {tabla_ref}({col_ref}) ON DELETE CASCADE"
+            )
+
     cur.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario)"
     )
-
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_movimientos_empresa_estado ON movimientos(empresa_id, estado_clasificacion)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_movimientos_poliza_id ON movimientos(poliza_id)"
+    )
 
 def hay_usuarios() -> bool:
-    con = get_connection()
-    try:
-        total = con.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0]
-    finally:
-        con.close()
-    return total > 0
+    with get_connection() as con:
+        fila = con.execute("SELECT COUNT(*) FROM usuarios").fetchone()
+        return fila[0] > 0

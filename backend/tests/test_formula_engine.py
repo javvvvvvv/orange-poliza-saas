@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -14,17 +14,17 @@
 # Ley Federal del Derecho de Autor y tratados internacionales aplicables.
 # ============================================================================
 """
-Pruebas del motor de fÃ³rmulas: casos normales + intentos de inyecciÃ³n.
+Pruebas del motor de fórmulas: casos normales + intentos de inyección.
 
-Esto es importante porque las fÃ³rmulas las va a escribir el usuario final
-(un contador) desde la interfaz web. Si usÃ¡ramos eval() a secas, alguien
-podrÃ­a escribir algo como:
+Esto es importante porque las fórmulas las va a escribir el usuario final
+(un contador) desde la interfaz web. Si usáramos eval() a secas, alguien
+podría escribir algo como:
 
     __import__('os').system('rm -rf /')
 
-en el campo de fÃ³rmula de una regla y tumbar el servidor. Por eso
-formula_engine.py parsea con `ast` y solo permite un subconjunto Ã­nfimo
-de operaciones. Estas pruebas documentan y verifican esa garantÃ­a.
+en el campo de fórmula de una regla y tumbar el servidor. Por eso
+formula_engine.py parsea con `ast` y solo permite un subconjunto ínfimo
+de operaciones. Estas pruebas documentan y verifican esa garantía.
 """
 
 import os
@@ -34,10 +34,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app", "core"))
 
 from formula_engine import evaluar_formula, FormulaError, construir_variables  # noqa: E402
 
-
 VARIABLES = construir_variables(total=11600, tasa_iva=0.16, tiene_iva=True,
                                  ret_iva=100, ret_isr=200, tipo_cambio=17.5)
-
 
 CASOS_VALIDOS = [
     ("TOTAL", 11600.0),
@@ -76,44 +74,43 @@ CASOS_INVALIDOS_SINTAXIS = [
     "   ",
 ]
 
-
 def correr_pruebas():
     fallos = 0
     total_pruebas = 0
 
     print("=" * 70)
-    print("PRUEBAS: fÃ³rmulas vÃ¡lidas")
+    print("PRUEBAS: fórmulas válidas")
     print("=" * 70)
     for expresion, esperado in CASOS_VALIDOS:
         total_pruebas += 1
         try:
             resultado = evaluar_formula(expresion, VARIABLES)
             ok = abs(resultado - esperado) < 0.01
-            estado = "âœ“" if ok else "âœ—"
+            estado = "✓" if ok else "✗"
             if not ok:
                 fallos += 1
             print(f"  {estado} '{expresion}' -> {resultado} (esperado {esperado})")
         except FormulaError as e:
             fallos += 1
-            print(f"  âœ— '{expresion}' -> ERROR inesperado: {e}")
+            print(f"  ✗ '{expresion}' -> ERROR inesperado: {e}")
 
     print("\n" + "=" * 70)
-    print("PRUEBAS: intentos de inyecciÃ³n de cÃ³digo (TODOS deben ser rechazados)")
+    print("PRUEBAS: intentos de inyección de código (TODOS deben ser rechazados)")
     print("=" * 70)
     for expresion in CASOS_INVALIDOS_INYECCION:
         total_pruebas += 1
         try:
             resultado = evaluar_formula(expresion, VARIABLES)
             fallos += 1
-            print(f"  âœ— PELIGRO: '{expresion}' se ejecutÃ³ y regresÃ³ {resultado!r} "
-                  f"(Â¡debÃ­a ser rechazado!)")
+            print(f"  ✗ PELIGRO: '{expresion}' se ejecutó y regresó {resultado!r} "
+                  f"(¡debía ser rechazado!)")
         except FormulaError:
-            print(f"  âœ“ Rechazado correctamente: '{expresion}'")
+            print(f"  ✓ Rechazado correctamente: '{expresion}'")
         except Exception as e:
-            # Cualquier otra excepciÃ³n tambiÃ©n significa que no se ejecutÃ³
-            # cÃ³digo arbitrario exitosamente, pero lo marcamos para revisar
+            # Cualquier otra excepción también significa que no se ejecutó
+            # código arbitrario exitosamente, pero lo marcamos para revisar
             # el tipo de error.
-            print(f"  âœ“ Rechazado (con {type(e).__name__}): '{expresion}'")
+            print(f"  ✓ Rechazado (con {type(e).__name__}): '{expresion}'")
 
     print("\n" + "=" * 70)
     print("PRUEBAS: variables inexistentes (deben rechazarse con mensaje claro)")
@@ -123,21 +120,21 @@ def correr_pruebas():
         try:
             evaluar_formula(expresion, VARIABLES)
             fallos += 1
-            print(f"  âœ— '{expresion}' no debiÃ³ evaluarse sin error")
+            print(f"  ✗ '{expresion}' no debió evaluarse sin error")
         except FormulaError as e:
-            print(f"  âœ“ Rechazado: '{expresion}' -> {e}")
+            print(f"  ✓ Rechazado: '{expresion}' -> {e}")
 
     print("\n" + "=" * 70)
-    print("PRUEBAS: sintaxis invÃ¡lida")
+    print("PRUEBAS: sintaxis inválida")
     print("=" * 70)
     for expresion in CASOS_INVALIDOS_SINTAXIS:
         total_pruebas += 1
         try:
             evaluar_formula(expresion, VARIABLES)
             fallos += 1
-            print(f"  âœ— {expresion!r} no debiÃ³ evaluarse sin error")
+            print(f"  ✗ {expresion!r} no debió evaluarse sin error")
         except FormulaError as e:
-            print(f"  âœ“ Rechazado: {expresion!r} -> {e}")
+            print(f"  ✓ Rechazado: {expresion!r} -> {e}")
 
     print("\n" + "=" * 70)
     if fallos == 0:
@@ -147,7 +144,6 @@ def correr_pruebas():
     print("=" * 70)
 
     return fallos == 0
-
 
 if __name__ == "__main__":
     exito = correr_pruebas()

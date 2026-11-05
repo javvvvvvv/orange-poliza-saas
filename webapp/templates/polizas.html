@@ -1,25 +1,96 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block titulo %}Pólizas{% endblock %}
 {% block contenido %}
-<h1 class="text-xl font-semibold text-marino-900 mb-6">Pólizas generadas</h1>
+{% set eid = request.view_args.get('empresa_id') %}
+<div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+  <div>
+    <h1 class="text-xl font-semibold text-marino-900">Pólizas generadas</h1>
+    <p class="text-xs text-slate-500 mt-1">
+      Revisa las pólizas, verifica sus CFDIs asociados y edítalas antes de enviarlas a CONTPAQi.
+    </p>
+  </div>
+  <div class="flex flex-wrap items-center gap-2">
+    <form action="/empresas/{{ eid }}/polizas/reconciliar_cfdi" method="POST" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+      <button type="submit" class="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-sm">
+        🔄 Asociar / Actualizar CFDIs ({{ total_cfdis_empresa }} XMLs)
+      </button>
+    </form>
+    {% if polizas %}
+    <button type="button" onclick="iniciarSincronizacionSdk({{ eid }})" class="px-4 py-2 bg-naranja-500 hover:bg-naranja-600 text-white rounded-lg text-xs font-bold shadow-sm">
+      🚀 Enviar {{ polizas|length }} Pólizas a CONTPAQi (SDK)
+    </button>
+    {% endif %}
+  </div>
+</div>
+
+{% if polizas %}
+<div class="grid grid-cols-3 gap-4 mb-6">
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="text-2xl font-bold text-marino-900">{{ polizas|length }}</div>
+    <div class="text-xs text-slate-500 mt-0.5">Total de pólizas generadas</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="text-2xl font-bold {{ 'text-emerald-600' if total_con_cfdi > 0 else 'text-amber-600' }}">
+      {{ total_con_cfdi }} <span class="text-sm font-normal text-slate-400">/ {{ polizas|length }}</span>
+    </div>
+    <div class="text-xs text-slate-500 mt-0.5">Pólizas con CFDI (UUID) asociado</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="text-2xl font-bold text-blue-600">{{ total_cfdis_empresa }}</div>
+    <div class="text-xs text-slate-500 mt-0.5">Facturas XML cargadas en la empresa</div>
+  </div>
+</div>
+{% endif %}
 
 <div class="space-y-3">
   {% for p in polizas %}
+  {% set cfdis_pol = detalle[p.id].cfdis %}
   <div class="bg-white border border-slate-200 rounded-xl p-5" id="poliza-card-{{ p.id }}">
     <div class="flex items-start justify-between cursor-pointer" onclick="document.getElementById('detalle-{{ p.id }}').classList.toggle('hidden')">
       <div>
-        <div class="font-medium text-marino-900">
-          {{ 'Ingreso' if p.tipo == 'ingreso' else 'Egreso' }} #{{ p.numero }}
+        <div class="flex flex-wrap items-center gap-2 font-medium text-marino-900">
+          <span>{{ 'Ingreso' if p.tipo == 'ingreso' else 'Egreso' }} #{{ p.numero }}</span>
           <span class="text-slate-400 font-normal">· {{ p.fecha }}</span>
+          {% if p.enviada_contpaqi %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200" title="Enviada a CONTPAQi el {{ p.fecha_envio or '' }}">
+              ✓ Enviada a CONTPAQi
+            </span>
+          {% endif %}
+          {% if cfdis_pol %}
+            {% for cf in cfdis_pol %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200" title="UUID: {{ cf.uuid }}">
+              📄 CFDI: {{ (cf.serie or '') ~ (cf.folio or '') or cf.uuid[:8] }} ({{ cf.uuid[:8] }}…)
+            </span>
+            {% endfor %}
+          {% else %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
+              ⚠ Sin CFDI asociado{% if p.numero_factura %} (Ref: {{ p.numero_factura }}){% endif %}
+            </span>
+          {% endif %}
         </div>
-        <div class="text-sm text-slate-500 mt-1">{{ p.descripcion_movimiento }}</div>
+        <div class="text-sm text-slate-500 mt-1">{{ p.descripcion_movimiento or p.concepto }}</div>
       </div>
-      <div class="text-xs {{ 'text-emerald-600' if p.cuadrada else 'text-red-600 font-bold' }} font-medium">
+      <div class="text-xs {{ 'text-emerald-600' if p.cuadrada else 'text-red-600 font-bold' }} font-medium shrink-0 ml-3">
         {{ 'Cuadrada' if p.cuadrada else 'NO CUADRADA' }}
       </div>
     </div>
 
     <div id="detalle-{{ p.id }}" class="hidden mt-4 border-t border-slate-100 pt-4">
+      {% if cfdis_pol %}
+      <div class="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-800 mb-3">
+        <div class="font-semibold mb-1">Facturas CFDI asociadas a esta póliza (se enviarán a CONTPAQi ADD):</div>
+        {% for cf in cfdis_pol %}
+        <div class="font-mono text-xs">
+          • Folio: <strong>{{ (cf.serie or '') ~ (cf.folio or 'S/F') }}</strong> |
+          UUID: <strong>{{ cf.uuid }}</strong> |
+          Total CFDI: ${{ "%.2f"|format(cf.total) }} |
+          Aplicado: ${{ "%.2f"|format(cf.importe_aplicado) }}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
       <table class="w-full text-xs mb-4">
         {% for l in detalle[p.id].lineas %}
         <tr>
@@ -42,7 +113,7 @@
         window.polizaData = window.polizaData || {};
         window.polizaData[{{ p.id }}] = [
           {% for l in detalle[p.id].lineas %}
-          { cuenta: "{{ l.cuenta }}", naturaleza: "{{ l.naturaleza }}", importe: {{ l.importe }}, descripcion: "{{ l.descripcion|replace('"', '\\"') }}" }{% if not loop.last %},{% endif %}
+          { cuenta: {{ l.cuenta|tojson }}, naturaleza: {{ l.naturaleza|tojson }}, importe: {{ l.importe }}, descripcion: {{ (l.descripcion or '')|tojson }} }{% if not loop.last %},{% endif %}
           {% endfor %}
         ];
       </script>
@@ -99,7 +170,7 @@
 </div>
 
 <script>
-    let csrf_token = document.querySelector('input[name="csrf_token"]').value;
+    const csrf_token = "{{ csrf_token() }}";
 
     function formatNumber(num) {
         return (Math.round(num * 100) / 100).toFixed(2);
@@ -119,12 +190,12 @@
         let difEl = document.getElementById('editor-diferencia');
         let totEl = document.getElementById('editor-totales');
         
-        totEl.innerHTML = <span class="text-emerald-600">C: $${formatNumber(cargos)}</span><br><span class="text-rose-600">A: $${formatNumber(abonos)}</span>;
+        totEl.innerHTML = `<span class="text-emerald-600">C: $${formatNumber(cargos)}</span><br><span class="text-rose-600">A: $${formatNumber(abonos)}</span>`;
         
         if (dif < 0.01) {
             difEl.innerHTML = '<span class="text-emerald-600">✅ Póliza Cuadrada</span>';
         } else {
-            difEl.innerHTML = <span class="text-red-600">❌ Descuadre: $${formatNumber(dif)}</span>;
+            difEl.innerHTML = `<span class="text-red-600">❌ Descuadre: $${formatNumber(dif)}</span>`;
         }
     }
 
@@ -138,30 +209,33 @@
         let tr = document.createElement('tr');
         
         let nat = datos ? datos.naturaleza : 'cargo';
-        let cta = datos ? datos.cuenta : '';
-        let imp = datos ? datos.importe : 0;
-        let desc = datos ? datos.descripcion : '';
+        let cta = datos ? (datos.cuenta || '') : '';
+        let imp = datos ? (datos.importe || 0) : 0;
+        let desc = datos ? (datos.descripcion || '') : '';
 
-        tr.innerHTML = 
+        tr.innerHTML = `
             <td class="p-1 border border-gray-200">
                 <select class="in-naturaleza w-full p-1 border border-gray-300 rounded text-xs" onchange="recalcularTotales()">
-                    <option value="cargo" >CARGO</option>
-                    <option value="abono" >ABONO</option>
+                    <option value="cargo" ${nat === 'cargo' ? 'selected' : ''}>CARGO</option>
+                    <option value="abono" ${nat === 'abono' ? 'selected' : ''}>ABONO</option>
                 </select>
             </td>
             <td class="p-1 border border-gray-200">
-                <input type="text" class="in-cuenta w-full p-1 border border-gray-300 rounded text-xs font-mono uppercase" value="" placeholder="Ej. 102-01-000">
+                <input type="text" class="in-cuenta w-full p-1 border border-gray-300 rounded text-xs font-mono uppercase" placeholder="Ej. 102-01-000">
             </td>
             <td class="p-1 border border-gray-200">
-                <input type="number" step="0.01" class="in-importe w-full p-1 border border-gray-300 rounded text-xs text-right" value="" onchange="recalcularTotales()" onkeyup="recalcularTotales()">
+                <input type="number" step="0.01" class="in-importe w-full p-1 border border-gray-300 rounded text-xs text-right" onchange="recalcularTotales()" onkeyup="recalcularTotales()">
             </td>
             <td class="p-1 border border-gray-200">
-                <input type="text" class="in-descripcion w-full p-1 border border-gray-300 rounded text-xs" value="" placeholder="Concepto">
+                <input type="text" class="in-descripcion w-full p-1 border border-gray-300 rounded text-xs" placeholder="Concepto">
             </td>
             <td class="p-1 border border-gray-200 text-center">
                 <button type="button" onclick="eliminarLinea(this)" class="text-red-500 hover:text-red-700 font-bold p-1">X</button>
             </td>
-        ;
+        `;
+        tr.querySelector('.in-cuenta').value = cta;
+        tr.querySelector('.in-importe').value = imp;
+        tr.querySelector('.in-descripcion').value = desc;
         tbody.appendChild(tr);
         recalcularTotales();
     }
@@ -201,7 +275,7 @@
         btn.innerText = "Guardando...";
         
         let empresa_id = "{{ request.view_args.get('empresa_id') }}";
-        let url = /empresas//polizas/16768/editar;
+        let url = `/empresas/${empresa_id}/polizas/${pid}/editar`;
         
         fetch(url, {
             method: 'POST',

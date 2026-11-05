@@ -1,4 +1,4 @@
-﻿# Memoria Técnica - Orange Poliza Engine
+# Memoria Técnica - Orange Poliza Engine
 
 ## Descripción Funcional
 Motor de conciliación automática y generación de pólizas contables para CONTPAQi.

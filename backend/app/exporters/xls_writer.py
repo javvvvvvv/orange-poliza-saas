@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -16,22 +16,22 @@
 """
 Escritor de archivos .xls "de verdad" (formato binario BIFF8 / Excel 97-2003).
 
-Contpaqi importa pÃ³lizas masivas en .xls clÃ¡sico, no en .xlsx. En este
+Contpaqi importa pólizas masivas en .xls clásico, no en .xlsx. En este
 entorno no hay paquetes como `xlwt` disponibles (y no hay red para
-instalarlos), pero SÃ estÃ¡ instalado LibreOffice, asÃ­ que resolvemos el
-problema igual que lo harÃ­a cualquier proceso de conversiÃ³n de servidor:
+instalarlos), pero SÍ está instalado LibreOffice, así que resolvemos el
+problema igual que lo haría cualquier proceso de conversión de servidor:
 
     1. Armamos el archivo con openpyxl (que solo sabe escribir .xlsx)
     2. Lo convertimos a .xls real invocando `soffice --headless --convert-to xls`
 
-Se probÃ³ que el round-trip conserva tipos correctamente: fechas siguen
-siendo fechas, nÃºmeros siguen siendo nÃºmeros, y los cÃ³digos de cuenta
+Se probó que el round-trip conserva tipos correctamente: fechas siguen
+siendo fechas, números siguen siendo números, y los códigos de cuenta
 guardados como texto (ej. '20001000009000000') NO se convierten a
-notaciÃ³n cientÃ­fica ni pierden ceros a la izquierda, que es el problema
-mÃ¡s comÃºn al mover cÃ³digos de cuenta contable entre formatos de Excel.
+notación científica ni pierden ceros a la izquierda, que es el problema
+más común al mover códigos de cuenta contable entre formatos de Excel.
 
 En Claude Code, cuando tengamos red, esto se puede reemplazar por
-`xlwt` directo (mÃ¡s rÃ¡pido, sin depender de LibreOffice) sin cambiar la
+`xlwt` directo (más rápido, sin depender de LibreOffice) sin cambiar la
 interfaz de `guardar_como_xls()`.
 """
 
@@ -43,16 +43,14 @@ import tempfile
 
 from openpyxl import Workbook
 
-
 class ErrorConversionXls(Exception):
     pass
 
-
-# Rutas tÃ­picas donde queda instalado LibreOffice cuando el instalador
+# Rutas típicas donde queda instalado LibreOffice cuando el instalador
 # NO agrega soffice al PATH del sistema (el caso normal en Windows: el
-# instalador de LibreOffice nunca toca el PATH, asÃ­ que aunque estÃ©
+# instalador de LibreOffice nunca toca el PATH, así que aunque esté
 # instalado, `subprocess.run(["soffice", ...])` no lo encuentra a menos
-# que se le dÃ© la ruta completa).
+# que se le dé la ruta completa).
 _RUTAS_CANDIDATAS_WINDOWS = [
     r"C:\Program Files\LibreOffice\program\soffice.exe",
     r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
@@ -63,11 +61,10 @@ _RUTAS_CANDIDATAS_MAC = [
 
 _ruta_soffice_cache = None
 
-
 def _encontrar_soffice() -> str:
     """Busca el ejecutable de LibreOffice: primero en el PATH (funciona
-    en Linux/Mac y en Windows si alguien lo agregÃ³ a mano), y si no,
-    en las rutas de instalaciÃ³n tÃ­picas de cada sistema operativo."""
+    en Linux/Mac y en Windows si alguien lo agregó a mano), y si no,
+    en las rutas de instalación típicas de cada sistema operativo."""
     global _ruta_soffice_cache
     if _ruta_soffice_cache:
         return _ruta_soffice_cache
@@ -87,14 +84,13 @@ def _encontrar_soffice() -> str:
             return ruta
 
     raise ErrorConversionXls(
-        "No se encontrÃ³ LibreOffice instalado. Se buscÃ³ en el PATH del "
-        "sistema y en las rutas tÃ­picas de instalaciÃ³n "
+        "No se encontró LibreOffice instalado. Se buscó en el PATH del "
+        "sistema y en las rutas típicas de instalación "
         f"({', '.join(candidatas) if candidatas else 'ninguna conocida para este sistema operativo'}). "
-        "Si ya lo instalaste, confirma que quedÃ³ en una de esas rutas, o "
+        "Si ya lo instalaste, confirma que quedó en una de esas rutas, o "
         "agrega la carpeta 'program' de LibreOffice al PATH del sistema "
-        "y reinicia la aplicaciÃ³n."
+        "y reinicia la aplicación."
     )
-
 
 def guardar_como_xls(workbook: Workbook, ruta_salida_xls: str, timeout_segundos: int = 60):
     """
@@ -121,7 +117,7 @@ def guardar_como_xls(workbook: Workbook, ruta_salida_xls: str, timeout_segundos:
 
         if resultado.returncode != 0 or not os.path.exists(ruta_xls_generado):
             raise ErrorConversionXls(
-                f"LibreOffice se encontrÃ³ en '{ruta_soffice}' pero la conversiÃ³n fallÃ³.\n"
+                f"LibreOffice se encontró en '{ruta_soffice}' pero la conversión falló.\n"
                 f"stdout: {resultado.stdout}\nstderr: {resultado.stderr}"
             )
 

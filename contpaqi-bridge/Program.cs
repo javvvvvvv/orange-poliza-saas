@@ -12,17 +12,6 @@
 // autorización expresa y por escrito del autor. Obra protegida conforme a la
 // Ley Federal del Derecho de Autor y tratados internacionales aplicables.
 // ============================================================================
-//
-// Cambios clave respecto al bridge anterior:
-//  - Kestrel en vez de HttpListener: Kestrel no enruta por Host header
-//    (http.sys sí), así que ya no hace falta que el cliente Python mande
-//    un header "Host: localhost:5005" falso para engañar al bridge.
-//  - Escucha en 0.0.0.0, así host.docker.internal (Docker Desktop) llega
-//    sin trucos.
-//  - Todas las llamadas al SDK COM pasan por un único hilo STA dedicado
-//    (StaComDispatcher) — el SDK es STA y Kestrel corre en el thread
-//    pool (MTA); llamarlo directo desde ahí es la causa más probable de
-//    las fallas intermitentes que había antes.
 using ContpaqiBridge.Models;
 using ContpaqiBridge.Services;
 
@@ -33,9 +22,19 @@ builder.Configuration
     .AddEnvironmentVariables(prefix: "CONTPAQI_BRIDGE_");
 
 var puerto = builder.Configuration.GetValue("Puerto", 5005);
+var hostBind = Environment.GetEnvironmentVariable("CONTPAQI_BRIDGE_HOST") ?? builder.Configuration.GetValue("Host", "127.0.0.1");
+var apiKeyConfig = Environment.GetEnvironmentVariable("CONTPAQI_BRIDGE_API_KEY") ?? builder.Configuration.GetValue("ApiKey", "orange_bridge_secret_2026");
+
 builder.WebHost.ConfigureKestrel(opciones =>
 {
-    opciones.ListenAnyIP(puerto);
+    if (hostBind == "0.0.0.0" || hostBind == "Any")
+    {
+        opciones.ListenAnyIP(puerto);
+    }
+    else
+    {
+        opciones.Listen(System.Net.IPAddress.Parse(hostBind), puerto);
+    }
 });
 
 builder.Services.AddSingleton<StaComDispatcher>();
@@ -43,9 +42,33 @@ builder.Services.AddSingleton<ContpaqiSdkService>();
 
 var app = builder.Build();
 
-// Empresas: nombre_interno_contpaqi (columna base_datos_contpaqi del lado
-// Python) se manda directo desde Flask, así que aquí no se necesita mapeo
-// nombre-bonito -> nombre-interno; eso ya se resolvió del lado Python.
+// Middleware de autenticación por API Key (si está configurada)
+app.Use(async (context, next) =>
+{
+    if (!string.IsNullOrWhiteSpace(apiKeyConfig) && context.Request.Path != "/salud")
+    {
+        var authHeader = context.Request.Headers["X-Bridge-ApiKey"].FirstOrDefault() 
+                         ?? context.Request.Headers["Authorization"].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(authHeader))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new RespuestaBridge(false, "Falta cabecera X-Bridge-ApiKey."));
+            return;
+        }
+
+        var token = authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) 
+            ? authHeader.Substring(7).Trim() 
+            : authHeader.Trim();
+
+        if (token != apiKeyConfig)
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.Response.WriteAsJsonAsync(new RespuestaBridge(false, "X-Bridge-ApiKey inválida."));
+            return;
+        }
+    }
+    await next();
+});
 
 app.MapGet("/salud", async (ContpaqiSdkService sdk) =>
 {
@@ -54,7 +77,6 @@ app.MapGet("/salud", async (ContpaqiSdkService sdk) =>
         ? Results.Ok(new RespuestaBridge(true, "SDK de CONTPAQi disponible."))
         : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
 });
-
 
 app.MapGet("/empresas/listar", async (ContpaqiSdkService sdk, ILogger<Program> log) =>
 {
@@ -121,6 +143,5 @@ app.MapPost("/", async (ExportarPolizasRequest req, ContpaqiSdkService sdk, ILog
     }
 });
 
-app.Logger.LogInformation("ContpaqiBridge escuchando en el puerto {Puerto}", puerto);
+app.Logger.LogInformation("ContpaqiBridge escuchando en {Host}:{Puerto}", hostBind, puerto);
 app.Run();
-

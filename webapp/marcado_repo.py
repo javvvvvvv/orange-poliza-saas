@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -23,35 +23,38 @@ from db import get_connection
 AMARILLO = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 NEGRITA = Font(bold=True)
 
+def generar_marcado(documento_id, empresa_id=None):
+    with get_connection() as con:
+        if empresa_id is not None:
+            documento = con.execute(
+                "SELECT * FROM documentos_importados WHERE id = ? AND empresa_id = ?",
+                (documento_id, empresa_id),
+            ).fetchone()
+        else:
+            documento = con.execute(
+                "SELECT * FROM documentos_importados WHERE id = ?", (documento_id,)
+            ).fetchone()
+        if documento is None or not documento["ruta_archivo"]:
+            raise ValueError("No se encontró el archivo original de este documento.")
 
-def generar_marcado(documento_id):
-    con = get_connection()
-    documento = con.execute(
-        "SELECT * FROM documentos_importados WHERE id = ?", (documento_id,)
-    ).fetchone()
-    if documento is None or not documento["ruta_archivo"]:
-        con.close()
-        raise ValueError("No se encontrÃ³ el archivo original de este documento.")
-
-    movimientos = con.execute(
-        """SELECT m.fila_original, m.fecha, p.tipo, p.numero
-           FROM movimientos m
-           JOIN polizas p ON p.id = m.poliza_id
-           WHERE m.documento_id = ? AND m.fila_original IS NOT NULL""",
-        (documento_id,),
-    ).fetchall()
-    con.close()
+        movimientos = con.execute(
+            """SELECT m.fila_original, m.fecha, p.tipo, p.numero
+               FROM movimientos m
+               JOIN polizas p ON p.id = m.poliza_id
+               WHERE m.documento_id = ? AND m.fila_original IS NOT NULL""",
+            (documento_id,),
+        ).fetchall()
 
     wb = load_workbook(documento["ruta_archivo"])
     hoja = documento["nombre_hoja"] or wb.sheetnames[0]
     ws = wb[hoja]
 
     ultima_col = ws.max_column
-    ws.cell(row=1, column=ultima_col + 1, value="NÃºmero de PÃ³liza").font = NEGRITA
+    ws.cell(row=1, column=ultima_col + 1, value="Número de Póliza").font = NEGRITA
 
     marcados = 0
     for m in movimientos:
-        # fila_original es Ã­ndice 0-based de pandas; +2 por encabezado y base 1 de Excel
+        # fila_original es índice 0-based de pandas; +2 por encabezado y base 1 de Excel
         fila_excel = m["fila_original"] + 2
         if fila_excel > ws.max_row:
             continue

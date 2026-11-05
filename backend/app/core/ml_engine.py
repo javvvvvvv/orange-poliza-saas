@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -19,12 +19,24 @@ Entrena un modelo local de scikit-learn con los datos historicos de
 asignacion manual de cada empresa (TF-IDF + SGDClassifier).
 """
 import os
-import joblib
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import SGDClassifier
-from sklearn.pipeline import Pipeline
-from fuzzy_matcher import _tokens
+try:
+    import joblib
+    import pandas as pd
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import SGDClassifier
+    from sklearn.pipeline import Pipeline
+    _ML_DISPONIBLE = True
+except ImportError:
+    joblib = None
+    pd = None
+    TfidfVectorizer = None
+    SGDClassifier = None
+    Pipeline = None
+    _ML_DISPONIBLE = False
+try:
+    from .fuzzy_matcher import _tokens
+except ImportError:
+    from fuzzy_matcher import _tokens
 
 _MODELS_DIR = os.path.join(os.path.dirname(__file__), "ml_models")
 os.makedirs(_MODELS_DIR, exist_ok=True)
@@ -43,7 +55,7 @@ class EntrenadorML:
         datos_entrenamiento: lista de dicts con 'descripcion', 'tipo' y 'regla_id'
         Solo entrena si hay mas de 10 ejemplos para evitar sobreajuste rapido.
         """
-        if len(datos_entrenamiento) < 10:
+        if not _ML_DISPONIBLE or len(datos_entrenamiento) < 10:
             return False
             
         df = pd.DataFrame(datos_entrenamiento)
@@ -69,13 +81,14 @@ class EntrenadorML:
         joblib.dump(pipeline, _get_model_path(empresa_id))
         return True
 
-
 class PredictorML:
     @staticmethod
     def predecir(empresa_id: int, descripcion: str, tipo: str, umbral: float = 0.88):
         """
         Intenta predecir la regla_id. Retorna (regla_id, probabilidad) si supera el umbral, sino (None, 0.0)
         """
+        if not _ML_DISPONIBLE:
+            return None, 0.0
         path = _get_model_path(empresa_id)
         if not os.path.exists(path):
             return None, 0.0

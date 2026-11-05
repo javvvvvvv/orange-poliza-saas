@@ -1,4 +1,5 @@
-﻿# ============================================================================
+# -*- coding: utf-8 -*-
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -13,96 +14,92 @@
 # Ley Federal del Derecho de Autor y tratados internacionales aplicables.
 # ============================================================================
 import os
-import stripe
-from flask import Blueprint, redirect, request, jsonify, session, flash, url_for, g
+import sys
+try:
+    import stripe
+except ImportError:
+    stripe = None
+from flask import Blueprint, redirect, request, jsonify, session, flash, url_for, render_template
 from auth import login_required
 from db import get_connection
 
-pagos_bp = Blueprint('pagos', __name__)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "services"))
+from billing_service import get_checkout_url, reactivar_suscripcion
 
-stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', 'sk_test_mock_secret')
-STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', 'whsec_mock')
-PRICE_ID = os.environ.get('STRIPE_PRICE_ID', 'price_1XXXXXX') 
+pagos_bp = Blueprint("pagos", __name__)
 
-@pagos_bp.route('/pagos/checkout', methods=['GET', 'POST'])
+_WEBHOOK_PLACEHOLDERS = frozenset({"", "whsec_mock", "TU_STRIPE_WEBHOOK_SECRET"})
+
+def _obtener_webhook_secret() -> str:
+    sec = (os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()
+    return "" if sec in _WEBHOOK_PLACEHOLDERS else sec
+
+@pagos_bp.route("/pagos/suscripcion-vencida")
+@login_required
+def suscripcion_vencida():
+    return render_template("suscripcion_vencida.html"), 402
+
+@pagos_bp.route("/pagos/checkout", methods=["GET", "POST"])
 @login_required
 def crear_checkout():
-    usuario_id = session.get('usuario_id')
+    usuario_id = session.get("usuario_id")
     if not usuario_id:
-        return redirect(url_for('auth.login'))
-        
-    con = get_connection()
-    usr = con.execute('SELECT organizacion_id, rol_global FROM usuarios WHERE id = ?', (usuario_id,)).fetchone()
-    con.close()
-    
-    if not usr or usr['rol_global'] not in ('superadmin', 'admin', 'gerente'):
-        flash('Solo los administradores pueden gestionar la suscripción.', 'error')
-        return redirect(url_for('empresas.selector_empresas'))
-        
-    org_id = usr['organizacion_id']
-    domain_url = request.host_url.rstrip('/')
-    
-    try:
-        checkout_session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[
-                {
-                    'price': PRICE_ID,
-                    'quantity': 1,
-                },
-            ],
-            mode='subscription',
-            success_url=domain_url + url_for('pagos.exito') + '?session_id={CHECKOUT_SESSION_ID}',
-            cancel_url=domain_url + url_for('empresas.selector_empresas'),
-            client_reference_id=str(org_id),
-        )
-        return redirect(checkout_session.url, code=303)
-    except Exception as e:
-        flash(f'Error al conectar con la pasarela de pagos: {str(e)}', 'error')
-        return redirect(url_for('empresas.selector_empresas'))
+        return redirect(url_for("auth.login"))
 
-@pagos_bp.route('/pagos/exito')
+    with get_connection() as con:
+        usr = con.execute(
+            "SELECT organizacion_id, rol_global FROM usuarios WHERE id = ?",
+            (usuario_id,),
+        ).fetchone()
+
+    if not usr or usr["rol_global"] not in ("superadmin", "admin", "gerente"):
+        flash("Solo los administradores pueden gestionar la suscripción.", "error")
+        return redirect(url_for("empresas.selector_empresas"))
+
+    org_id = usr["organizacion_id"]
+    domain_url = request.host_url.rstrip("/")
+
+    try:
+        url = get_checkout_url(
+            org_id,
+            success_url=domain_url + url_for("pagos.exito") + "?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url=domain_url + url_for("empresas.selector_empresas"),
+            host_url=domain_url,
+        )
+        return redirect(url, code=303)
+    except Exception as e:
+        flash(f"Error al conectar con la pasarela de pagos: {str(e)}", "error")
+        return redirect(url_for("empresas.selector_empresas"))
+
+@pagos_bp.route("/pagos/exito")
 @login_required
 def exito():
-    flash('¡Pago completado! Tu suscripción ha sido procesada correctamente.', 'success')
-    return redirect(url_for('empresas.selector_empresas'))
+    flash("¡Pago completado! Tu suscripción ha sido procesada correctamente.", "exito")
+    return redirect(url_for("empresas.selector_empresas"))
 
-@pagos_bp.route('/pagos/webhook', methods=['POST'])
+@pagos_bp.route("/pagos/webhook", methods=["POST"])
 def stripe_webhook():
+    webhook_secret = _obtener_webhook_secret()
+    if not webhook_secret:
+        return jsonify({"exito": False, "mensaje": "STRIPE_WEBHOOK_SECRET no configurado."}), 503
+
     payload = request.get_data(as_text=True)
-    sig_header = request.headers.get('Stripe-Signature')
-    
+    sig_header = request.headers.get("Stripe-Signature")
+    if not sig_header:
+        return jsonify({"exito": False, "mensaje": "Falta cabecera Stripe-Signature."}), 400
+
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, STRIPE_WEBHOOK_SECRET
-        )
-    except Exception as e:
-        return 'Error', 400
-        
-    if event['type'] == 'checkout.session.completed':
-        session_obj = event['data']['object']
-        org_id = session_obj.get('client_reference_id')
-        
-        if org_id:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except Exception:
+        return jsonify({"exito": False, "mensaje": "Firma de webhook inválida."}), 400
+
+    if event.get("type") == "checkout.session.completed":
+        session_obj = event.get("data", {}).get("object", {})
+        org_id = session_obj.get("client_reference_id")
+        if org_id and str(org_id).isdigit():
             _acreditar_pago(int(org_id))
-            
+
     return jsonify(success=True), 200
 
 def _acreditar_pago(org_id):
-    con = get_connection()
-    try:
-        con.execute(
-            '''UPDATE organizaciones 
-               SET estado_suscripcion = 'activa', 
-                   fecha_vencimiento_suscripcion = 
-                     CASE 
-                       WHEN fecha_vencimiento_suscripcion > NOW() THEN fecha_vencimiento_suscripcion + INTERVAL '30 days'
-                       ELSE NOW() + INTERVAL '30 days'
-                     END
-               WHERE id = ?''', 
-            (org_id,)
-        )
-        con.commit()
-    finally:
-        con.close()
-
+    reactivar_suscripcion(org_id, dias=30)

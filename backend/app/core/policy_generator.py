@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -14,78 +14,87 @@
 # Ley Federal del Derecho de Autor y tratados internacionales aplicables.
 # ============================================================================
 """
-Generador de pÃ³lizas para Orange Poliza Engine.
+Generador de pólizas para Orange Poliza Engine (con aritmética exacta Decimal).
 
 Toma:
-  - un movimiento normalizado (fecha, descripciÃ³n, total, tipo, etc.)
-  - una PLANTILLA de movimientos contables (lista de lÃ­neas: cuenta,
-    cargo/abono, fÃ³rmula) que viene de la regla que hizo match
+  - un movimiento normalizado (fecha, descripción, total, tipo, etc.)
+  - una PLANTILLA de movimientos contables (lista de líneas: cuenta,
+    cargo/abono, fórmula) que viene de la regla que hizo match
       (ver rule_engine.encontrar_regla)
 
 y genera:
-  - las lÃ­neas de la pÃ³liza (cargos y abonos ya calculados)
-  - una validaciÃ³n de que cuadra (suma cargos == suma abonos)
-  - una explicaciÃ³n paso a paso para el visor de auditorÃ­a
+  - las líneas de la póliza (cargos y abonos ya calculados con Decimal)
+  - una validación de que cuadra (suma cargos == suma abonos)
+  - una explicación paso a paso para el visor de auditoría
 """
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Optional
 
 try:
-    from .formula_engine import evaluar_formula, construir_variables, FormulaError
+    from .formula_engine import (
+        evaluar_formula,
+        construir_variables,
+        FormulaError,
+        MontoDecimal,
+        redondear_moneda,
+    )
 except ImportError:  # se ejecuta como script suelto (ej. demo_end_to_end.py)
-    from formula_engine import evaluar_formula, construir_variables, FormulaError
-
+    from formula_engine import (
+        evaluar_formula,
+        construir_variables,
+        FormulaError,
+        MontoDecimal,
+        redondear_moneda,
+    )
 
 @dataclass
 class LineaPlantilla:
-    """Una lÃ­nea de la plantilla contable de una regla, tal como se
+    """Una línea de la plantilla contable de una regla, tal como se
     guarda en la tabla `plantilla_movimientos`."""
     cuenta: str
     naturaleza: str  # 'cargo' | 'abono'
     formula: str      # ej. "TOTAL / 1.16", "IVA", "TOTAL"
-    descripcion_linea: Optional[str] = None  # si es None, se usa la descripciÃ³n del movimiento
-
+    descripcion_linea: Optional[str] = None  # si es None, se usa la descripción del movimiento
 
 @dataclass
 class LineaPoliza:
-    """Una lÃ­nea ya calculada, lista para exportar."""
+    """Una línea ya calculada, lista para exportar."""
     cuenta: str
     naturaleza: str
-    importe: float
+    importe: Decimal
     descripcion: str
     formula_usada: str
-
 
 @dataclass
 class ResultadoPoliza:
     lineas: list = field(default_factory=list)
     cuadrada: bool = False
-    diferencia: float = 0.0
+    diferencia: Decimal = field(default_factory=lambda: MontoDecimal("0.00"))
     explicacion: list = field(default_factory=list)  # lista de strings, paso a paso
     errores: list = field(default_factory=list)
-
 
 def generar_poliza(
     movimiento: dict,
     plantilla: list[LineaPlantilla],
     nombre_regla: str,
     motivo_match: str,
-    tasa_iva: float = 0.16,
-    tasa_ret_iva: float = 0.0,
-    tasa_ret_isr: float = 0.0,
+    tasa_iva=Decimal("0.16"),
+    tasa_ret_iva=Decimal("0.0"),
+    tasa_ret_isr=Decimal("0.0"),
 ) -> ResultadoPoliza:
     """
-    Genera las lÃ­neas de pÃ³liza para un movimiento, aplicando la
+    Genera las líneas de póliza para un movimiento, aplicando la
     plantilla de la regla que hizo match.
 
     :param movimiento: dict con al menos 'total', 'descripcion', 'tipo',
         'tiene_iva', 'ret_iva', 'ret_isr', 'tipo_cambio'
     :param plantilla: lista de LineaPlantilla en el orden en que deben
-        aparecer en la pÃ³liza
-    :param nombre_regla: nombre de la regla que se estÃ¡ aplicando (para
-        la explicaciÃ³n)
-    :param motivo_match: el `motivo` que regresÃ³ rule_engine.encontrar_regla
+        aparecer en la póliza
+    :param nombre_regla: nombre de la regla que se está aplicando (para
+        la explicación)
+    :param motivo_match: el `motivo` que regresó rule_engine.encontrar_regla
     """
     resultado = ResultadoPoliza()
 
@@ -93,9 +102,9 @@ def generar_poliza(
         total=movimiento["total"],
         tasa_iva=tasa_iva,
         tiene_iva=movimiento.get("tiene_iva", False),
-        ret_iva=movimiento.get("ret_iva", 0.0),
-        ret_isr=movimiento.get("ret_isr", 0.0),
-        tipo_cambio=movimiento.get("tipo_cambio", 1.0),
+        ret_iva=movimiento.get("ret_iva", Decimal("0.00")),
+        ret_isr=movimiento.get("ret_isr", Decimal("0.00")),
+        tipo_cambio=movimiento.get("tipo_cambio", Decimal("1.0")),
         tasa_ret_iva=tasa_ret_iva,
         tasa_ret_isr=tasa_ret_isr,
         iva_exacto=movimiento.get("iva_exacto"),
@@ -109,23 +118,23 @@ def generar_poliza(
         + ", ".join(f"{k}={v}" for k, v in variables.items())
     )
 
-    suma_cargos = 0.0
-    suma_abonos = 0.0
+    suma_cargos = MontoDecimal("0.00")
+    suma_abonos = MontoDecimal("0.00")
 
     for linea_plantilla in plantilla:
         try:
             importe = evaluar_formula(linea_plantilla.formula, variables)
         except FormulaError as e:
             resultado.errores.append(
-                f"Error en la lÃ­nea de cuenta {linea_plantilla.cuenta}: {e}"
+                f"Error en la línea de cuenta {linea_plantilla.cuenta}: {e}"
             )
             continue
 
-        if importe < 0:
+        if importe < Decimal("0.00"):
             resultado.errores.append(
-                f"La fÃ³rmula '{linea_plantilla.formula}' para la cuenta "
+                f"La fórmula '{linea_plantilla.formula}' para la cuenta "
                 f"{linea_plantilla.cuenta} dio un importe negativo ({importe}). "
-                f"Revisa la fÃ³rmula."
+                f"Revisa la fórmula."
             )
             continue
 
@@ -136,7 +145,7 @@ def generar_poliza(
         cuenta_eval = linea_plantilla.cuenta
         if cuenta_eval == "BANCO" and movimiento.get("cuenta_banco"):
             cuenta_eval = movimiento["cuenta_banco"]
-            
+
         linea = LineaPoliza(
             cuenta=cuenta_eval,
             naturaleza=linea_plantilla.naturaleza,
@@ -147,33 +156,53 @@ def generar_poliza(
         resultado.lineas.append(linea)
 
         if linea_plantilla.naturaleza == "cargo":
-            suma_cargos += importe
+            suma_cargos = redondear_moneda(suma_cargos + importe)
         else:
-            suma_abonos += importe
+            suma_abonos = redondear_moneda(suma_abonos + importe)
 
         resultado.explicacion.append(
             f"  {linea_plantilla.naturaleza.upper():6s}  cuenta {linea_plantilla.cuenta:12s} "
             f"= {linea_plantilla.formula}  ->  ${importe:,.2f}"
         )
 
-    suma_cargos = round(suma_cargos, 2)
-    suma_abonos = round(suma_abonos, 2)
-    diferencia = round(suma_cargos - suma_abonos, 2)
+    diferencia = redondear_moneda(suma_cargos - suma_abonos)
+
+    # Absorción automática de 1 centavo cuando dos fórmulas con división
+    # (ej. "TOTAL / 1.16" y "(TOTAL / 1.16) * 0.16") producen $0.01 de diferencia por redondeo
+    if not resultado.errores and resultado.lineas and Decimal("0.00") < abs(diferencia) <= Decimal("0.01"):
+        naturaleza_ajustar = "cargo" if diferencia < Decimal("0.00") else "abono"
+        ajuste = abs(diferencia) if diferencia < Decimal("0.00") else -abs(diferencia)
+        candidatas = [
+            l for l in resultado.lineas
+            if l.naturaleza == naturaleza_ajustar and l.formula_usada.strip().upper() != "TOTAL"
+        ]
+        if not candidatas:
+            candidatas = [l for l in resultado.lineas if l.naturaleza == naturaleza_ajustar]
+        if candidatas:
+            linea_aj = candidatas[-1]
+            nuevo_imp = redondear_moneda(linea_aj.importe + ajuste)
+            if nuevo_imp >= Decimal("0.00"):
+                linea_aj.importe = nuevo_imp
+                suma_cargos = redondear_moneda(sum((l.importe for l in resultado.lineas if l.naturaleza == "cargo"), MontoDecimal("0.00")))
+                suma_abonos = redondear_moneda(sum((l.importe for l in resultado.lineas if l.naturaleza == "abono"), MontoDecimal("0.00")))
+                diferencia = redondear_moneda(suma_cargos - suma_abonos)
+                resultado.explicacion.append(
+                    f"  Ajuste de redondeo ($0.01) aplicado en cuenta {linea_aj.cuenta} -> ${linea_aj.importe:,.2f}"
+                )
 
     resultado.diferencia = diferencia
-    resultado.cuadrada = (abs(diferencia) < 0.01) and not resultado.errores
+    resultado.cuadrada = (abs(diferencia) < Decimal("0.01")) and not resultado.errores
 
     if resultado.cuadrada:
         resultado.explicacion.append(
-            f"âœ“ PÃ³liza cuadrada. Cargos: ${suma_cargos:,.2f}  "
+            f"✓ Póliza cuadrada. Cargos: ${suma_cargos:,.2f}  "
             f"Abonos: ${suma_abonos:,.2f}"
         )
     else:
         if not resultado.errores:
             resultado.explicacion.append(
-                f"âœ— PÃ³liza NO cuadrada. Cargos: ${suma_cargos:,.2f}  "
+                f"✗ Póliza NO cuadrada. Cargos: ${suma_cargos:,.2f}  "
                 f"Abonos: ${suma_abonos:,.2f}  Diferencia: ${diferencia:,.2f}"
             )
 
     return resultado
-

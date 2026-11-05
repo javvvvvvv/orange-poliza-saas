@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -20,12 +20,12 @@ Esto es lo que hace que las reglas sean "configurables por datos" de
 verdad: en vez de vivir como una lista de `Regla(...)` escrita a mano en
 un script (como en los demos anteriores), viven en una base SQLite en
 disco y se pueden agregar, quitar, activar/desactivar y editar en
-cualquier momento, sin tocar cÃ³digo. Cuando pasemos a producciÃ³n con
+cualquier momento, sin tocar código. Cuando pasemos a producción con
 Claude Code, este mismo repositorio se vuelve una capa sobre PostgreSQL
-(las tablas ya estÃ¡n definidas en database/schema.sql); la interfaz de
-este mÃ³dulo no deberÃ­a cambiar.
+(las tablas ya están definidas en database/schema.sql); la interfaz de
+este módulo no debería cambiar.
 
-Uso tÃ­pico:
+Uso típico:
 
     repo = RepositorioReglas()
 
@@ -53,11 +53,10 @@ from typing import Optional
 from db import get_connection
 from rule_engine import Regla
 
-
 class RepositorioReglas:
     """Las tablas que usa este repositorio (reglas, regla_palabras_clave,
     plantilla_movimientos) ya se crean en database/schema.sql al
-    arrancar el servidor (ver db.inicializar_db()), asÃ­ que este
+    arrancar el servidor (ver db.inicializar_db()), así que este
     repositorio solo se conecta con db.get_connection(); ya no recibe
     ruta de archivo porque la base ahora es PostgreSQL, compartida por
     todas las instancias de la app."""
@@ -86,150 +85,196 @@ class RepositorioReglas:
         y regresa su id. `plantilla` es una lista de dicts:
         {"cuenta": ..., "naturaleza": "cargo"|"abono", "formula": ...,
          "descripcion_linea": ... (opcional)}"""
-        con = self._conectar()
-        cur = con.cursor()
-        cur.execute(
-            """INSERT INTO reglas
-               (empresa_id, nombre, prioridad, activa, rfc_contraparte,
-                cuenta_bancaria_contraparte, descripcion_exacta,
-                tipo_movimiento, creada_por)
-               VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)""",
-            (empresa_id, nombre, prioridad, rfc_contraparte,
-             cuenta_bancaria_contraparte, descripcion_exacta,
-             tipo_movimiento, creada_por),
-        )
-        regla_id = cur.lastrowid
-
-        for palabra in (palabras_clave or []):
+        with self._conectar() as con:
+            cur = con.cursor()
             cur.execute(
+                """INSERT INTO reglas
+                   (empresa_id, nombre, prioridad, activa, rfc_contraparte,
+                    cuenta_bancaria_contraparte, descripcion_exacta,
+                    tipo_movimiento, creada_por)
+                   VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)""",
+                (empresa_id, nombre, prioridad, rfc_contraparte,
+                 cuenta_bancaria_contraparte, descripcion_exacta,
+                 tipo_movimiento, creada_por),
+            )
+            regla_id = cur.lastrowid
+
+            for palabra in (palabras_clave or []):
+                cur.execute(
+                    "INSERT INTO regla_palabras_clave (regla_id, palabra) VALUES (?, ?)",
+                    (regla_id, palabra),
+                )
+
+            for orden, linea in enumerate(plantilla):
+                cur.execute(
+                    """INSERT INTO plantilla_movimientos
+                       (regla_id, orden, cuenta, naturaleza, formula, descripcion_linea)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (regla_id, orden, linea["cuenta"], linea["naturaleza"],
+                     linea["formula"], linea.get("descripcion_linea")),
+                )
+
+            con.commit()
+            return regla_id
+
+    def agregar_palabra_clave(self, regla_id: int, palabra: str):
+        with self._conectar() as con:
+            con.execute(
                 "INSERT INTO regla_palabras_clave (regla_id, palabra) VALUES (?, ?)",
                 (regla_id, palabra),
             )
-
-        for orden, linea in enumerate(plantilla):
-            cur.execute(
-                """INSERT INTO plantilla_movimientos
-                   (regla_id, orden, cuenta, naturaleza, formula, descripcion_linea)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (regla_id, orden, linea["cuenta"], linea["naturaleza"],
-                 linea["formula"], linea.get("descripcion_linea")),
-            )
-
-        con.commit()
-        con.close()
-        return regla_id
-
-    def agregar_palabra_clave(self, regla_id: int, palabra: str):
-        con = self._conectar()
-        con.execute(
-            "INSERT INTO regla_palabras_clave (regla_id, palabra) VALUES (?, ?)",
-            (regla_id, palabra),
-        )
-        con.commit()
-        con.close()
+            con.commit()
 
     def quitar_palabra_clave(self, regla_id: int, palabra: str):
-        con = self._conectar()
-        con.execute(
-            "DELETE FROM regla_palabras_clave WHERE regla_id = ? AND palabra = ?",
-            (regla_id, palabra),
-        )
-        con.commit()
-        con.close()
+        with self._conectar() as con:
+            con.execute(
+                "DELETE FROM regla_palabras_clave WHERE regla_id = ? AND palabra = ?",
+                (regla_id, palabra),
+            )
+            con.commit()
 
     def agregar_linea_plantilla(self, regla_id: int, cuenta: str, naturaleza: str,
                                  formula: str, descripcion_linea: Optional[str] = None,
                                  orden: Optional[int] = None):
-        """Agrega un movimiento mÃ¡s a la pÃ³liza que genera esta regla
-        (ej. "ademÃ¡s, agrega un cargo del 4% a tal cuenta")."""
-        con = self._conectar()
-        cur = con.cursor()
-        if orden is None:
+        """Agrega un movimiento más a la póliza que genera esta regla
+        (ej. "además, agrega un cargo del 4% a tal cuenta")."""
+        with self._conectar() as con:
+            cur = con.cursor()
+            if orden is None:
+                cur.execute(
+                    "SELECT COALESCE(MAX(orden), -1) + 1 FROM plantilla_movimientos WHERE regla_id = ?",
+                    (regla_id,),
+                )
+                orden = cur.fetchone()[0]
             cur.execute(
-                "SELECT COALESCE(MAX(orden), -1) + 1 FROM plantilla_movimientos WHERE regla_id = ?",
-                (regla_id,),
+                """INSERT INTO plantilla_movimientos
+                   (regla_id, orden, cuenta, naturaleza, formula, descripcion_linea)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (regla_id, orden, cuenta, naturaleza, formula, descripcion_linea),
             )
-            orden = cur.fetchone()[0]
-        cur.execute(
-            """INSERT INTO plantilla_movimientos
-               (regla_id, orden, cuenta, naturaleza, formula, descripcion_linea)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (regla_id, orden, cuenta, naturaleza, formula, descripcion_linea),
-        )
-        con.commit()
-        con.close()
-        return cur.lastrowid
+            con.commit()
+            return cur.lastrowid
 
     def quitar_linea_plantilla(self, linea_id: int):
-        con = self._conectar()
-        con.execute("DELETE FROM plantilla_movimientos WHERE id = ?", (linea_id,))
-        con.commit()
-        con.close()
+        with self._conectar() as con:
+            con.execute("DELETE FROM plantilla_movimientos WHERE id = ?", (linea_id,))
+            con.commit()
 
-    def activar_regla(self, regla_id: int):
-        self._set_activa(regla_id, True)
+    def activar_regla(self, regla_id: int, empresa_id: Optional[int] = None) -> bool:
+        return self._set_activa(regla_id, True, empresa_id=empresa_id)
 
-    def desactivar_regla(self, regla_id: int):
-        self._set_activa(regla_id, False)
+    def desactivar_regla(self, regla_id: int, empresa_id: Optional[int] = None) -> bool:
+        return self._set_activa(regla_id, False, empresa_id=empresa_id)
 
-    def _set_activa(self, regla_id: int, activa: bool):
-        con = self._conectar()
-        con.execute("UPDATE reglas SET activa = ? WHERE id = ?", (1 if activa else 0, regla_id))
-        con.commit()
-        con.close()
+    def _set_activa(self, regla_id: int, activa: bool, empresa_id: Optional[int] = None) -> bool:
+        with self._conectar() as con:
+            if empresa_id is not None:
+                cur = con.execute(
+                    "UPDATE reglas SET activa = ? WHERE id = ? AND empresa_id = ?",
+                    (1 if activa else 0, regla_id, empresa_id),
+                )
+            else:
+                cur = con.execute(
+                    "UPDATE reglas SET activa = ? WHERE id = ?",
+                    (1 if activa else 0, regla_id),
+                )
+            con.commit()
+            return cur.rowcount > 0
 
-    def eliminar_regla(self, regla_id: int):
+    def eliminar_regla(self, regla_id: int, empresa_id: Optional[int] = None) -> bool:
         """Borra la regla por completo, junto con sus palabras clave y
-        su plantilla de movimientos (ON DELETE CASCADE)."""
-        con = self._conectar()
-        con.execute("DELETE FROM reglas WHERE id = ?", (regla_id,))
-        con.commit()
-        con.close()
+        su plantilla de movimientos (ON DELETE CASCADE). Si se especifica
+        empresa_id, valida que la regla pertenezca a esa empresa."""
+        with self._conectar() as con:
+            if empresa_id is not None:
+                cur = con.execute(
+                    "DELETE FROM reglas WHERE id = ? AND empresa_id = ?",
+                    (regla_id, empresa_id),
+                )
+            else:
+                cur = con.execute("DELETE FROM reglas WHERE id = ?", (regla_id,))
+            con.commit()
+            return cur.rowcount > 0
 
-    def registrar_uso(self, regla_id: int):
+    def registrar_uso(self, regla_id: int, con=None):
         """Se llama cada vez que una regla se aplica a un movimiento;
-        sirve para saber cuÃ¡les reglas son las mÃ¡s usadas."""
-        con = self._conectar()
-        con.execute(
-            "UPDATE reglas SET veces_aplicada = veces_aplicada + 1 WHERE id = ?",
-            (regla_id,),
-        )
-        con.commit()
-        con.close()
+        sirve para saber cuáles reglas son las más usadas."""
+        cerrar = con is None
+        if cerrar:
+            con = self._conectar()
+        try:
+            con.execute(
+                "UPDATE reglas SET veces_aplicada = veces_aplicada + 1 WHERE id = ?",
+                (regla_id,),
+            )
+            con.commit()
+        finally:
+            if cerrar:
+                con.close()
 
     # -----------------------------------------------------------------
     # Consultar
     # -----------------------------------------------------------------
 
     def listar_reglas(self, empresa_id: int, solo_activas: bool = False) -> list[dict]:
-        con = self._conectar()
-        query = "SELECT * FROM reglas WHERE empresa_id = ?"
-        params = [empresa_id]
-        if solo_activas:
-            query += " AND activa = 1"
-        query += " ORDER BY prioridad ASC"
-        filas = con.execute(query, params).fetchall()
-        resultado = [dict(f) for f in filas]
-        con.close()
-        return resultado
+        with self._conectar() as con:
+            query = "SELECT * FROM reglas WHERE empresa_id = ?"
+            params = [empresa_id]
+            if solo_activas:
+                query += " AND activa = 1"
+            query += " ORDER BY prioridad ASC"
+            filas = con.execute(query, params).fetchall()
+            return [dict(f) for f in filas]
+
+    def listar_reglas_completas(self, empresa_id: int) -> list[dict]:
+        """Trae todas las reglas de una empresa con sus palabras clave y plantillas
+        en exactamente 3 consultas batch, eliminando el problema N+1."""
+        with self._conectar() as con:
+            filas_reglas = con.execute(
+                "SELECT * FROM reglas WHERE empresa_id = ? ORDER BY prioridad ASC",
+                (empresa_id,),
+            ).fetchall()
+            reglas = [dict(f) for f in filas_reglas]
+            if not reglas:
+                return []
+
+            r_ids_str = ",".join(str(int(r["id"])) for r in reglas)
+
+            filas_palabras = con.execute(
+                f"SELECT regla_id, palabra FROM regla_palabras_clave WHERE regla_id IN ({r_ids_str})"
+            ).fetchall()
+            palabras_por_regla: dict[int, list[str]] = {}
+            for fp in filas_palabras:
+                palabras_por_regla.setdefault(fp["regla_id"], []).append(fp["palabra"])
+
+            filas_lineas = con.execute(
+                f"SELECT * FROM plantilla_movimientos WHERE regla_id IN ({r_ids_str}) ORDER BY orden ASC"
+            ).fetchall()
+            plantillas_por_regla: dict[int, list[dict]] = {}
+            for fl in filas_lineas:
+                plantillas_por_regla.setdefault(fl["regla_id"], []).append(dict(fl))
+
+            for r in reglas:
+                r["palabras_clave"] = palabras_por_regla.get(r["id"], [])
+                r["plantilla"] = plantillas_por_regla.get(r["id"], [])
+
+            return reglas
 
     def obtener_plantilla(self, regla_id: int) -> list[dict]:
-        con = self._conectar()
-        filas = con.execute(
-            "SELECT * FROM plantilla_movimientos WHERE regla_id = ? ORDER BY orden ASC",
-            (regla_id,),
-        ).fetchall()
-        con.close()
-        return [dict(f) for f in filas]
+        with self._conectar() as con:
+            filas = con.execute(
+                "SELECT * FROM plantilla_movimientos WHERE regla_id = ? ORDER BY orden ASC",
+                (regla_id,),
+            ).fetchall()
+            return [dict(f) for f in filas]
 
     def obtener_palabras_clave(self, regla_id: int) -> list[str]:
-        con = self._conectar()
-        filas = con.execute(
-            "SELECT palabra FROM regla_palabras_clave WHERE regla_id = ?",
-            (regla_id,),
-        ).fetchall()
-        con.close()
-        return [f[0] for f in filas]
+        with self._conectar() as con:
+            filas = con.execute(
+                "SELECT palabra FROM regla_palabras_clave WHERE regla_id = ?",
+                (regla_id,),
+            ).fetchall()
+            return [f[0] for f in filas]
 
     def cargar_para_motor(self, empresa_id: int):
         """
@@ -237,38 +282,59 @@ class RepositorioReglas:
         objetos `Regla` (de rule_engine.py), listas para pasarle a
         `encontrar_regla(movimiento, reglas)`, junto con un diccionario
         {regla_id: [LineaPlantilla, ...]} para generar_poliza().
+        Usa exactamente 3 consultas batch sin N+1.
         """
-        from policy_generator import LineaPlantilla  # import local para evitar ciclos
+        from policy_generator import LineaPlantilla
 
-        reglas_raw = self.listar_reglas(empresa_id, solo_activas=True)
-        reglas = []
-        plantillas = {}
+        with self._conectar() as con:
+            filas_reglas = con.execute(
+                "SELECT * FROM reglas WHERE empresa_id = ? AND activa = 1 ORDER BY prioridad ASC",
+                (empresa_id,),
+            ).fetchall()
+            reglas_raw = [dict(f) for f in filas_reglas]
+            if not reglas_raw:
+                return [], {}
 
-        for r in reglas_raw:
-            palabras = self.obtener_palabras_clave(r["id"])
-            reglas.append(Regla(
-                id=r["id"],
-                empresa_id=r["empresa_id"],
-                nombre=r["nombre"],
-                prioridad=r["prioridad"],
-                activa=bool(r["activa"]),
-                rfc_contraparte=r["rfc_contraparte"],
-                cuenta_bancaria_contraparte=r["cuenta_bancaria_contraparte"],
-                descripcion_exacta=r["descripcion_exacta"],
-                descripcion_contiene=palabras,
-                tipo_movimiento=r["tipo_movimiento"],
-            ))
+            r_ids_str = ",".join(str(int(r["id"])) for r in reglas_raw)
 
-            lineas_raw = self.obtener_plantilla(r["id"])
-            plantillas[r["id"]] = [
-                LineaPlantilla(
-                    cuenta=l["cuenta"],
-                    naturaleza=l["naturaleza"],
-                    formula=l["formula"],
-                    descripcion_linea=l["descripcion_linea"],
+            filas_palabras = con.execute(
+                f"SELECT regla_id, palabra FROM regla_palabras_clave WHERE regla_id IN ({r_ids_str})"
+            ).fetchall()
+            palabras_por_regla: dict[int, list[str]] = {}
+            for fp in filas_palabras:
+                palabras_por_regla.setdefault(fp["regla_id"], []).append(fp["palabra"])
+
+            filas_lineas = con.execute(
+                f"SELECT * FROM plantilla_movimientos WHERE regla_id IN ({r_ids_str}) ORDER BY orden ASC"
+            ).fetchall()
+            lineas_por_regla: dict[int, list[LineaPlantilla]] = {}
+            for fl in filas_lineas:
+                lineas_por_regla.setdefault(fl["regla_id"], []).append(
+                    LineaPlantilla(
+                        cuenta=fl["cuenta"],
+                        naturaleza=fl["naturaleza"],
+                        formula=fl["formula"],
+                        descripcion_linea=fl["descripcion_linea"],
+                    )
                 )
-                for l in lineas_raw
-            ]
 
-        return reglas, plantillas
+            reglas = []
+            plantillas = {}
+            for r in reglas_raw:
+                palabras = palabras_por_regla.get(r["id"], [])
+                reglas.append(Regla(
+                    id=r["id"],
+                    empresa_id=r["empresa_id"],
+                    nombre=r["nombre"],
+                    prioridad=r["prioridad"],
+                    activa=bool(r["activa"]),
+                    rfc_contraparte=r["rfc_contraparte"],
+                    cuenta_bancaria_contraparte=r["cuenta_bancaria_contraparte"],
+                    descripcion_exacta=r["descripcion_exacta"],
+                    descripcion_contiene=palabras,
+                    tipo_movimiento=r["tipo_movimiento"],
+                ))
+                plantillas[r["id"]] = lineas_por_regla.get(r["id"], [])
+
+            return reglas, plantillas
 

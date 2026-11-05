@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -19,12 +19,12 @@ def construir_plantilla_simple(tipo, tiene_iva, afectable_impuestos, cuenta_cont
     movimiento por movimiento), con tres capas:
 
       - `afectable_impuestos=False`: el movimiento NO se toca con IVA
-        para nada (ej. nÃ³mina, prÃ©stamos, movimientos entre cuentas
-        propias). Va directo banco <-> cuenta seleccionada, 2 lÃ­neas,
+        para nada (ej. nómina, préstamos, movimientos entre cuentas
+        propias). Va directo banco <-> cuenta seleccionada, 2 líneas,
         sin importar lo que diga `tiene_iva`.
 
-      - `tiene_iva=True`: movimiento tÃ­pico con traspaso de IVA
-        "por cobrar/pagar" a IVA "causado", 4 lÃ­neas balanceadas:
+      - `tiene_iva=True`: movimiento típico con traspaso de IVA
+        "por cobrar/pagar" a IVA "causado", 4 líneas balanceadas:
 
         INGRESO:
           cargo  Bancos                    TOTAL
@@ -38,22 +38,22 @@ def construir_plantilla_simple(tipo, tiene_iva, afectable_impuestos, cuenta_cont
           cargo  IVA acreditable           TOTAL/1.16*.16
           cargo  (cuenta que elige el usuario)  TOTAL
 
-        NÃ³tese que la cuenta que elige el usuario se afecta por el
+        Nótese que la cuenta que elige el usuario se afecta por el
         TOTAL (no por la BASE): el IVA se mueve aparte, entre las
         cuentas de IVA por trasladar/acreditar y IVA trasladado/
         acreditable, no contra la cuenta de la contraparte.
 
-      - `lineas_generales`: lÃ­neas adicionales que la empresa configurÃ³
-        en ConfiguraciÃ³n > Reglas generales para TODOS sus ingresos o
-        egresos (ej. algunas empresas ademÃ¡s llevan "Ingresos por
-        aplicar / Ingresos"). Se agregan despuÃ©s del bloque bÃ¡sico.
+      - `lineas_generales`: líneas adicionales que la empresa configuró
+        en Configuración > Reglas generales para TODOS sus ingresos o
+        egresos (ej. algunas empresas además llevan "Ingresos por
+        aplicar / Ingresos"). Se agregan después del bloque básico.
     """
     cuenta_banco = "BANCO"
     cuenta_contraparte = cuenta_contraparte.strip()
     lineas_generales = lineas_generales or []
 
     if not afectable_impuestos:
-        # Caso nÃ³mina/no fiscal: solo banco <-> cuenta seleccionada.
+        # Caso nómina/no fiscal: solo banco <-> cuenta seleccionada.
         if tipo == "egreso":
             return [
                 {"cuenta": cuenta_contraparte, "naturaleza": "cargo", "formula": "TOTAL", "descripcion_linea": None},
@@ -106,11 +106,10 @@ def construir_plantilla_simple(tipo, tiene_iva, afectable_impuestos, cuenta_cont
     ]
     return base + extra
 
-
 def validar_cuentas_iva_configuradas(tipo, tiene_iva, afectable_impuestos, empresa):
     """Regresa un mensaje de error si falta configurar alguna de las
     cuentas de IVA necesarias, para avisar antes de intentar crear la
-    regla. Con el movimiento tÃ­pico de 4 lÃ­neas hacen falta AMBAS
+    regla. Con el movimiento típico de 4 líneas hacen falta AMBAS
     cuentas del par (la "por trasladar/acreditar" y la "trasladado/
     acreditable"), no solo una."""
     if not afectable_impuestos or not tiene_iva:
@@ -124,7 +123,7 @@ def validar_cuentas_iva_configuradas(tipo, tiene_iva, afectable_impuestos, empre
         ]
         if faltantes:
             return (
-                "Este movimiento tiene IVA, pero falta configurar en ConfiguraciÃ³n la(s) "
+                "Este movimiento tiene IVA, pero falta configurar en Configuración la(s) "
                 f"cuenta(s): {', '.join(faltantes)}."
             )
     if tipo == "ingreso":
@@ -136,7 +135,7 @@ def validar_cuentas_iva_configuradas(tipo, tiene_iva, afectable_impuestos, empre
         ]
         if faltantes:
             return (
-                "Este movimiento tiene IVA, pero falta configurar en ConfiguraciÃ³n la(s) "
+                "Este movimiento tiene IVA, pero falta configurar en Configuración la(s) "
                 f"cuenta(s): {', '.join(faltantes)}."
             )
     return None

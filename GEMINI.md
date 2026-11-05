@@ -1,4 +1,4 @@
-﻿Estándar de código — Orange Crew + estilo personal
+Estándar de código — Orange Crew + estilo personal
 
 Esta skill define cómo debe escribirse, editase y revisarse código en cualquier lenguaje, para cualquier proyecto (web, scripts, ERP, revisiones de código). Se aplica por defecto, no solo cuando el usuario lo pide explícitamente.
 

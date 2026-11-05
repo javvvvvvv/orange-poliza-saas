@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -14,8 +14,8 @@
 # Ley Federal del Derecho de Autor y tratados internacionales aplicables.
 # ============================================================================
 """Motor de reglas de Orange Poliza Engine: dado un movimiento y las
-reglas activas de una empresa, decide quÃ© plantilla contable aplica.
-Orden de prioridad: RFC exacto > cuenta bancaria exacta > descripciÃ³n
+reglas activas de una empresa, decide qué plantilla contable aplica.
+Orden de prioridad: RFC exacto > cuenta bancaria exacta > descripción
 exacta > contiene palabra clave > similitud difusa > sin coincidencia."""
 
 import base64
@@ -26,13 +26,11 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional
 
-
 from ml_engine import PredictorML
 from fuzzy_matcher import similitud_combinada, confianza_desde_similitud
 
 _DIR = os.path.dirname(__file__)
 _LLAVE = b"OC-9k-reglas-2026"
-
 
 def _cargar_mapa() -> dict:
     with open(os.path.join(_DIR, "_k9d2.dat")) as f:
@@ -41,10 +39,8 @@ def _cargar_mapa() -> dict:
     raw = bytes(b ^ _LLAVE[i % len(_LLAVE)] for i, b in enumerate(xored))
     return json.loads(raw)["re"]
 
-
 _CFG = _cargar_mapa()
 UMBRAL_DIFUSO = _CFG["um"]
-
 
 def normalizar_texto(texto: str) -> str:
     if not texto:
@@ -59,7 +55,6 @@ def normalizar_texto(texto: str) -> str:
 
     return texto.strip()
 
-
 @dataclass
 class Regla:
     id: int
@@ -68,26 +63,24 @@ class Regla:
     prioridad: int
     activa: bool
 
-    # Condiciones (cualquiera que estÃ© presente se evalÃºa; todas las
+    # Condiciones (cualquiera que esté presente se evalúa; todas las
     # presentes deben cumplirse para que la regla aplique)
     rfc_contraparte: Optional[str] = None
     cuenta_bancaria_contraparte: Optional[str] = None
-    descripcion_exacta: Optional[str] = None       # comparaciÃ³n normalizada exacta
+    descripcion_exacta: Optional[str] = None       # comparación normalizada exacta
     descripcion_contiene: list = field(default_factory=list)  # lista de palabras clave
     tipo_movimiento: Optional[str] = None           # 'ingreso' | 'egreso' | None (cualquiera)
 
-    # QuÃ© generar si la regla aplica
+    # Qué generar si la regla aplica
     plantilla_id: int = None
-
 
 @dataclass
 class MatchResult:
     """Resultado de tratar de encontrar una regla para un movimiento."""
     regla: Optional[Regla]
     confianza: int  # 0-100
-    motivo: str      # explicaciÃ³n humana de por quÃ© (o por quÃ© no) hizo match
+    motivo: str      # explicación humana de por qué (o por qué no) hizo match
     nivel: str        # 'rfc' | 'cuenta_bancaria' | 'exacta' | 'contiene' | 'sin_coincidencia'
-
 
 def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
     descripcion_norm = normalizar_texto(movimiento.get("descripcion", ""))
@@ -137,12 +130,12 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
                 return MatchResult(
                     regla=regla,
                     confianza=100,
-                    motivo=f"La descripciÃ³n ('{desc_original}') "
+                    motivo=f"La descripción ('{desc_original}') "
                            f"coincide exactamente con la regla '{regla.nombre}'.",
                     nivel="exacta",
                 )
 
-    # --- Nivel 4: descripciÃ³n contiene alguna palabra clave ---
+    # --- Nivel 4: descripción contiene alguna palabra clave ---
     mejor_match = None
     mejor_confianza = -1
     for regla in reglas_ordenadas:
@@ -158,7 +151,7 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
                     mejor_match = MatchResult(
                         regla=regla,
                         confianza=confianza,
-                        motivo=f"La descripciÃ³n contiene la palabra clave "
+                        motivo=f"La descripción contiene la palabra clave "
                                f"'{palabra_clave}' configurada en la regla "
                                f"'{regla.nombre}'.",
                         nivel="contiene",
@@ -189,7 +182,7 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
                 regla=mejor_regla_difusa,
                 confianza=confianza_desde_similitud(mejor_score),
                 motivo=(
-                    f"La descripciÃ³n '{descripcion_norm}' se parece "
+                    f"La descripción '{descripcion_norm}' se parece "
                     f"({round(mejor_score * 100)}% de similitud, considerando "
                     f"abreviaturas y orden distinto de palabras) a lo que ya "
                     f"reconoce la regla '{mejor_regla_difusa.nombre}'."
@@ -201,9 +194,9 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
     return MatchResult(
         regla=None,
         confianza=0,
-        motivo="NingÃºn RFC, cuenta bancaria, descripciÃ³n exacta, palabra clave "
+        motivo="Ningún RFC, cuenta bancaria, descripción exacta, palabra clave "
                "ni similitud difusa coincide con este movimiento. Se necesita "
-               "clasificaciÃ³n manual para crear una regla nueva.",
+               "clasificación manual para crear una regla nueva.",
         nivel="sin_coincidencia",
     )
 

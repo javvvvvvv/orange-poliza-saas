@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -23,7 +23,6 @@ from conciliador_avanzado import conciliar_avanzado
 
 RFC_EMPRESA = "EDP930101AB1"
 
-
 def cfdi(uuid, rfc_emisor, rfc_receptor, total, fecha, serie="A", folio="1"):
     base = round(total / 1.16, 2)
     iva = round(total - base, 2)
@@ -33,14 +32,12 @@ def cfdi(uuid, rfc_emisor, rfc_receptor, total, fecha, serie="A", folio="1"):
         tipo_comprobante="I", impuestos_trasladados=[ImpuestoTraslado(base, iva, 0.16)],
     )
 
-
 def mov(tipo, total, fecha, rfc=None):
     return {"tipo": tipo, "total": total, "fecha": fecha, "rfc_contraparte": rfc, "descripcion": "mov"}
 
-
 def main():
     print("=" * 70)
-    print("CASO 1: Cliente paga PARCIAL una factura, despuÃ©s liquida el resto")
+    print("CASO 1: Cliente paga PARCIAL una factura, después liquida el resto")
     print("=" * 70)
     cfdis = [cfdi("U1", RFC_EMPRESA, "CLI001XXX", 10000.00, datetime(2026, 8, 1), folio="100")]
     movs = [
@@ -76,13 +73,12 @@ def main():
         print(f"  [{p.tipo_match}] confianza={p.confianza}  {p.motivo}")
 
     print("\n" + "=" * 70)
-    print("CASO 4: Movimiento sin RFC pero con importe idÃ©ntico a una factura")
+    print("CASO 4: Movimiento sin RFC pero con importe idéntico a una factura")
     print("=" * 70)
     cfdis = [cfdi("U6", "PROV004XXX", RFC_EMPRESA, 999.99, datetime(2026, 8, 1), folio="777")]
     movs = [mov("egreso", 999.99, datetime(2026, 8, 3), rfc=None)]
     for p in conciliar_avanzado(cfdis, movs, RFC_EMPRESA):
         print(f"  [{p.tipo_match}] confianza={p.confianza}  {p.motivo}")
-
 
 if __name__ == "__main__":
     main()

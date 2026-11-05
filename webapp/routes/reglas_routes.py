@@ -9,6 +9,7 @@ import os
 import uuid
 import tempfile
 import shutil
+from itertools import zip_longest
 from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for, send_file, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -24,8 +25,14 @@ import reglas_generales_repo
 from rules_repository import RepositorioReglas
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "app", "core")))
+from formula_engine import validar_formula
 import orange_intelligence
 
+def _int_seguro(valor, default=100) -> int:
+    try:
+        return int(str(valor).strip())
+    except (ValueError, TypeError):
+        return default
 
 from excel_importer import (
     importar_excel, ConfiguracionImportacion, FORMATO_COLUMNAS_SEPARADAS,
@@ -33,9 +40,6 @@ from excel_importer import (
     listar_hojas, vista_previa, vista_previa_cruda, detectar_fila_encabezado
 )
 from asignacion_rapida import construir_plantilla_simple, validar_cuentas_iva_configuradas
-
-
-
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOADS_DIR = os.path.join(BASE_DIR, '..', "uploads")
@@ -68,16 +72,8 @@ reglas_bp = Blueprint('reglas', __name__)
 @empresa_requerida
 def reglas_lista(empresa_id):
     repo = RepositorioReglas()
-    reglas = repo.listar_reglas(empresa_id)
-    reglas_completas = []
-    for r in reglas:
-        reglas_completas.append({
-            **dict(r),
-            "palabras_clave": repo.obtener_palabras_clave(r["id"]),
-            "plantilla": repo.obtener_plantilla(r["id"]),
-        })
+    reglas_completas = repo.listar_reglas_completas(empresa_id)
     return render_template("reglas.html", reglas=reglas_completas)
-
 
 @reglas_bp.route("/empresas/<int:empresa_id>/reglas/nueva", methods=["GET", "POST"])
 @login_required
@@ -97,12 +93,22 @@ def regla_nueva(empresa_id):
             if c and n and f
         ]
 
+        formulas_invalidas = [
+            f"Línea {idx+1} ({item['cuenta']}): '{item['formula']}'"
+            for idx, item in enumerate(plantilla)
+            if not validar_formula(item.get("formula", ""))
+        ]
+        if formulas_invalidas:
+            flash(f"Fórmula contable inválida en: {'; '.join(formulas_invalidas)}. Usa variables válidas como TOTAL, BASE, IVA.", "error")
+            cuentas = catalogo_repo.listar(empresa_id)
+            return render_template("regla_form.html", cuentas=cuentas), 400
+
         palabras = [p.strip() for p in request.form.get("palabras_clave", "").split(",") if p.strip()]
 
         repo.crear_regla(
             empresa_id=empresa_id,
             nombre=request.form["nombre"],
-            prioridad=int(request.form.get("prioridad", 100)),
+            prioridad=_int_seguro(request.form.get("prioridad"), 100),
             tipo_movimiento=request.form.get("tipo_movimiento") or None,
             rfc_contraparte=request.form.get("rfc_contraparte") or None,
             cuenta_bancaria_contraparte=request.form.get("cuenta_bancaria_contraparte") or None,
@@ -112,20 +118,21 @@ def regla_nueva(empresa_id):
             creada_por=g.usuario["id"],
         )
         flash("Regla creada.", "exito")
-        return redirect(url_for("reglas_lista", empresa_id=empresa_id))
+        return redirect(url_for("reglas.reglas_lista", empresa_id=empresa_id))
 
     cuentas = catalogo_repo.listar(empresa_id)
     return render_template("regla_form.html", cuentas=cuentas)
-
 
 @reglas_bp.route("/empresas/<int:empresa_id>/reglas/<int:regla_id>/eliminar", methods=["POST"])
 @login_required
 @empresa_requerida
 def regla_eliminar(empresa_id, regla_id):
-    RepositorioReglas().eliminar_regla(regla_id)
+    eliminada = RepositorioReglas().eliminar_regla(regla_id, empresa_id=empresa_id)
+    if not eliminada:
+        flash("Regla no encontrada en esta empresa.", "error")
+        return redirect(url_for("reglas.reglas_lista", empresa_id=empresa_id)), 404
     flash("Regla eliminada.", "exito")
-    return redirect(url_for("reglas_lista", empresa_id=empresa_id))
-
+    return redirect(url_for("reglas.reglas_lista", empresa_id=empresa_id))
 
 @reglas_bp.route("/empresas/<int:empresa_id>/reglas/<int:regla_id>/toggle", methods=["POST"])
 @login_required
@@ -134,13 +141,14 @@ def regla_toggle(empresa_id, regla_id):
     repo = RepositorioReglas()
     reglas = repo.listar_reglas(empresa_id)
     regla = next((r for r in reglas if r["id"] == regla_id), None)
-    if regla:
-        if regla["activa"]:
-            repo.desactivar_regla(regla_id)
-        else:
-            repo.activar_regla(regla_id)
-    return redirect(url_for("reglas_lista", empresa_id=empresa_id))
-
+    if not regla:
+        flash("Regla no encontrada en esta empresa.", "error")
+        return redirect(url_for("reglas.reglas_lista", empresa_id=empresa_id)), 404
+    if regla["activa"]:
+        repo.desactivar_regla(regla_id, empresa_id=empresa_id)
+    else:
+        repo.activar_regla(regla_id, empresa_id=empresa_id)
+    return redirect(url_for("reglas.reglas_lista", empresa_id=empresa_id))
 
 # --- Pendientes de revisión (aprendizaje) ---
 
@@ -153,49 +161,47 @@ def pendientes_siguiente(empresa_id):
     tuy.py. Al guardar, crea la regla automáticamente y pasa al
     siguiente. Es el camino principal; el modo lista completa
     (con fórmulas manuales) sigue disponible en /pendientes/avanzado."""
-    omitidos = session.get("pendientes_omitidos", [])
-    con = get_connection()
-    movimiento = con.execute(
-        f"""SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion = 'pendiente'
-            {"AND id NOT IN (" + ",".join("?" * len(omitidos)) + ")" if omitidos else ""}
-            ORDER BY id ASC LIMIT 1""",
-        (empresa_id, *omitidos),
-    ).fetchone()
-    total_pendientes = con.execute(
-        "SELECT COUNT(*) FROM movimientos WHERE empresa_id = ? AND estado_clasificacion = 'pendiente'",
-        (empresa_id,),
-    ).fetchone()[0]
-    con.close()
+    omitidos = [int(x) for x in session.get("pendientes_omitidos", []) if str(x).isdigit()]
+    with get_connection() as con:
+        movimiento = con.execute(
+            f"""SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion = 'pendiente'
+                {"AND id NOT IN (" + ",".join("?" * len(omitidos)) + ")" if omitidos else ""}
+                ORDER BY id ASC LIMIT 1""",
+            (empresa_id, *omitidos),
+        ).fetchone()
+        total_pendientes = con.execute(
+            "SELECT COUNT(*) FROM movimientos WHERE empresa_id = ? AND estado_clasificacion = 'pendiente'",
+            (empresa_id,),
+        ).fetchone()[0]
 
     if movimiento is None:
         session.pop("pendientes_omitidos", None)
         return render_template("pendientes_siguiente.html", movimiento=None, total_pendientes=total_pendientes)
 
-    _, sugerencia = movimientos_repo.sugerencia_para_movimiento(movimiento["id"])
+    _, sugerencia = movimientos_repo.sugerencia_para_movimiento(movimiento["id"], empresa_id=empresa_id)
     cuentas = catalogo_repo.listar(empresa_id)
     empresa = bancos_repo.obtener_empresa(empresa_id)
 
-    con = get_connection()
-    banco = con.execute(
-        """SELECT b.* FROM bancos b JOIN documentos_importados d ON d.banco_id = b.id
-           WHERE d.id = ?""",
-        (movimiento["documento_id"],),
-    ).fetchone()
+    with get_connection() as con:
+        banco = con.execute(
+            """SELECT b.* FROM bancos b JOIN documentos_importados d ON d.banco_id = b.id
+               WHERE d.id = ? AND d.empresa_id = ?""",
+            (movimiento["documento_id"], empresa_id),
+        ).fetchone()
 
-    # Si ya hay un CFDI confirmado para este movimiento, el sistema ya
-    # conoce el RFC y los impuestos exactos: no hace falta preguntar
-    # IVA ni afectable, solo la cuenta contable del cliente/proveedor.
-    cfdi_info = con.execute(
-        """SELECT c.serie, c.folio, c.rfc_emisor, c.nombre_emisor, c.rfc_receptor, c.nombre_receptor, c.total,
-                  ci.base, ci.importe AS iva_importe, ci.tasa
-           FROM cfdi_movimiento cm
-           JOIN cfdis c ON c.id = cm.cfdi_id
-           LEFT JOIN cfdi_impuestos ci ON ci.cfdi_id = c.id
-           WHERE cm.movimiento_id = ? AND cm.confirmado = 1
-           LIMIT 1""",
-        (movimiento["id"],),
-    ).fetchone()
-    con.close()
+        # Si ya hay un CFDI confirmado para este movimiento, el sistema ya
+        # conoce el RFC y los impuestos exactos: no hace falta preguntar
+        # IVA ni afectable, solo la cuenta contable del cliente/proveedor.
+        cfdi_info = con.execute(
+            """SELECT c.serie, c.folio, c.rfc_emisor, c.nombre_emisor, c.rfc_receptor, c.nombre_receptor, c.total,
+                      ci.base, ci.importe AS iva_importe, ci.tasa
+               FROM cfdi_movimiento cm
+               JOIN cfdis c ON c.id = cm.cfdi_id
+               LEFT JOIN cfdi_impuestos ci ON ci.cfdi_id = c.id
+               WHERE cm.movimiento_id = ? AND cm.confirmado = 1
+               LIMIT 1""",
+            (movimiento["id"],),
+        ).fetchone()
 
     return render_template(
         "pendientes_siguiente.html", movimiento=movimiento, sugerencia=sugerencia,
@@ -204,37 +210,43 @@ def pendientes_siguiente(empresa_id):
         restantes=total_pendientes - len(omitidos),
     )
 
-
 @reglas_bp.route("/empresas/<int:empresa_id>/pendientes/<int:movimiento_id>/omitir", methods=["POST"])
 @login_required
 @empresa_requerida
 def pendiente_omitir(empresa_id, movimiento_id):
+    with get_connection() as con:
+        existe = con.execute(
+            "SELECT id FROM movimientos WHERE id = ? AND empresa_id = ?",
+            (movimiento_id, empresa_id),
+        ).fetchone()
+    if not existe:
+        return redirect(url_for("reglas.pendientes_siguiente", empresa_id=empresa_id)), 404
     omitidos = session.get("pendientes_omitidos", [])
     omitidos.append(movimiento_id)
     session["pendientes_omitidos"] = omitidos
     return redirect(url_for("reglas.pendientes_siguiente", empresa_id=empresa_id))
 
-
 @reglas_bp.route("/empresas/<int:empresa_id>/pendientes/<int:movimiento_id>/asignar-rapido", methods=["POST"])
 @login_required
 @empresa_requerida
 def pendiente_asignar_rapido(empresa_id, movimiento_id):
-    con = get_connection()
-    movimiento = con.execute("SELECT * FROM movimientos WHERE id = ?", (movimiento_id,)).fetchone()
-    con.close()
-    if movimiento is None:
-        return redirect(url_for("reglas.pendientes_siguiente", empresa_id=empresa_id))
+    with get_connection() as con:
+        movimiento = con.execute(
+            "SELECT * FROM movimientos WHERE id = ? AND empresa_id = ?",
+            (movimiento_id, empresa_id),
+        ).fetchone()
+        if movimiento is None:
+            flash("Movimiento no encontrado en esta empresa.", "error")
+            return redirect(url_for("reglas.pendientes_siguiente", empresa_id=empresa_id)), 404
+
+        tiene_cfdi = con.execute(
+            "SELECT 1 FROM cfdi_movimiento WHERE movimiento_id = ? AND confirmado = 1",
+            (movimiento_id,),
+        ).fetchone() is not None
 
     cuenta_contraparte = request.form["cuenta_contraparte"].strip()
     cuenta_banco = request.form.get("cuenta_banco", "").strip()
     aplicar_a = request.form.get("aplicar_a", "solo_similares")  # 'solo_este' | 'solo_similares'
-
-    con = get_connection()
-    tiene_cfdi = con.execute(
-        "SELECT 1 FROM cfdi_movimiento WHERE movimiento_id = ? AND confirmado = 1",
-        (movimiento_id,),
-    ).fetchone() is not None
-    con.close()
 
     if tiene_cfdi:
         # El CFDI ya confirma que es fiscal y que tiene impuestos; no se
@@ -257,7 +269,7 @@ def pendiente_asignar_rapido(empresa_id, movimiento_id):
         cuenta_banco, empresa, lineas_generales=lineas_generales,
     )
 
-    mov_dict, sugerencia = movimientos_repo.sugerencia_para_movimiento(movimiento_id)
+    mov_dict, sugerencia = movimientos_repo.sugerencia_para_movimiento(movimiento_id, empresa_id=empresa_id)
 
     if aplicar_a == "solo_este":
         sugerencia.tipo_coincidencia = "exacta"
@@ -294,30 +306,53 @@ def pendiente_asignar_rapido(empresa_id, movimiento_id):
         f"Regla creada. {resultado['automaticos']} movimiento(s) clasificado(s) con ella.",
         "exito",
     )
+    descuadres = resultado.get("descuadres") or []
+    if descuadres:
+        ejemplos = " | ".join(d["mensaje"] for d in descuadres[:3])
+        extra = f" (+{len(descuadres) - 3} más)" if len(descuadres) > 3 else ""
+        flash(
+            f"Atención: {len(descuadres)} movimiento(s) coincidieron con una regla pero no cuadraron: {ejemplos}{extra}",
+            "error",
+        )
     return redirect(url_for("reglas.pendientes_siguiente", empresa_id=empresa_id))
-
 
 @reglas_bp.route("/empresas/<int:empresa_id>/pendientes/avanzado")
 @login_required
 @empresa_requerida
 def pendientes(empresa_id):
-    """Modo avanzado: lista todos los pendientes a la vez, con
-    fórmulas manuales por línea. Útil para casos con retenciones,
-    cuentas complementarias o combinaciones que el asistente rápido
-    no cubre."""
-    movimientos = movimientos_repo.listar_movimientos(empresa_id, estado="pendiente")
+    """Modo avanzado: lista todos los pendientes a la vez con sus sugerencias
+    en una sola conexión y consulta, eliminando el patrón N+1."""
+    with get_connection() as con:
+        empresa = con.execute("SELECT rfc FROM empresas WHERE id = ?", (empresa_id,)).fetchone()
+        rfc_empresa = empresa["rfc"] if empresa else ""
+        filas = con.execute(
+            "SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion = 'pendiente' ORDER BY fecha ASC",
+            (empresa_id,),
+        ).fetchall()
+        
     items = []
-    for m in movimientos:
-        _, sugerencia = movimientos_repo.sugerencia_para_movimiento(m["id"])
-        items.append({"movimiento": m, "sugerencia": sugerencia})
+    from learning_engine import sugerir_regla_desde_clasificacion_manual
+    for f in filas:
+        mov = movimientos_repo._fila_a_movimiento_dict(f)
+        sug = sugerir_regla_desde_clasificacion_manual(mov, rfc_empresa=rfc_empresa)
+        items.append({"movimiento": mov, "sugerencia": sug})
+        
     cuentas = catalogo_repo.listar(empresa_id)
     return render_template("pendientes.html", items=items, cuentas=cuentas)
-
 
 @reglas_bp.route("/empresas/<int:empresa_id>/pendientes/<int:movimiento_id>/crear-regla", methods=["POST"])
 @login_required
 @empresa_requerida
 def pendiente_crear_regla(empresa_id, movimiento_id):
+    with get_connection() as con:
+        existe = con.execute(
+            "SELECT id FROM movimientos WHERE id = ? AND empresa_id = ?",
+            (movimiento_id, empresa_id),
+        ).fetchone()
+    if not existe:
+        flash("Movimiento no encontrado en esta empresa.", "error")
+        return redirect(url_for("reglas.pendientes", empresa_id=empresa_id)), 404
+
     tipo_coincidencia = request.form["tipo_coincidencia"]
     valor_coincidencia = request.form["valor_coincidencia"].strip()
     nombre_regla = request.form["nombre_regla"].strip()
@@ -333,6 +368,15 @@ def pendiente_crear_regla(empresa_id, movimiento_id):
         if c and n and f
     ]
 
+    formulas_invalidas = [
+        f"Línea {idx+1} ({item['cuenta']}): '{item['formula']}'"
+        for idx, item in enumerate(plantilla)
+        if not validar_formula(item.get("formula", ""))
+    ]
+    if formulas_invalidas:
+        flash(f"No se puede crear la regla: fórmula contable inválida en {'; '.join(formulas_invalidas)}. Usa variables como TOTAL, BASE, IVA.", "error")
+        return redirect(url_for("reglas.pendientes", empresa_id=empresa_id)), 400
+
     repo = RepositorioReglas()
     kwargs = {
         "empresa_id": empresa_id, "nombre": nombre_regla, "tipo_movimiento": tipo_movimiento,
@@ -346,9 +390,16 @@ def pendiente_crear_regla(empresa_id, movimiento_id):
         kwargs["palabras_clave"] = [valor_coincidencia]
 
     repo.crear_regla(**kwargs)
-    movimientos_repo.clasificar_pendientes(empresa_id)
+    resultado = movimientos_repo.clasificar_pendientes(empresa_id)
 
     flash("Regla creada y aplicada a los movimientos pendientes.", "exito")
+    descuadres = resultado.get("descuadres") or []
+    if descuadres:
+        ejemplos = " | ".join(d["mensaje"] for d in descuadres[:3])
+        extra = f" (+{len(descuadres) - 3} más)" if len(descuadres) > 3 else ""
+        flash(
+            f"Atención: {len(descuadres)} movimiento(s) coincidieron con una regla pero no cuadraron: {ejemplos}{extra}",
+            "error",
+        )
     return redirect(url_for("reglas.pendientes", empresa_id=empresa_id))
-
 

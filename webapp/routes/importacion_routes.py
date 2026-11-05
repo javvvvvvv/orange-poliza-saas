@@ -9,11 +9,20 @@ import os
 import uuid
 import tempfile
 import shutil
+import hashlib
 from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for, send_file, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from auth import login_required, empresa_requerida, obtener_empresas_del_usuario
 from db import get_connection, hay_usuarios
+from upload_security import (
+    ruta_segura_en_directorio,
+    extraer_xmls_de_zip_seguro,
+    limpiar_temporales_antiguos,
+    ErrorArchivoInseguro,
+    EXTENSIONES_ESTADO_CUENTA,
+    EXTENSIONES_CFDI,
+)
 import usuarios_repo
 import bancos_repo
 import catalogo_repo
@@ -23,7 +32,6 @@ import movimientos_repo
 import reglas_generales_repo
 from rules_repository import RepositorioReglas
 
-
 import pdf_importer
 from excel_importer import (
     importar_excel, ConfiguracionImportacion, FORMATO_COLUMNAS_SEPARADAS,
@@ -31,9 +39,6 @@ from excel_importer import (
     listar_hojas, vista_previa, vista_previa_cruda, detectar_fila_encabezado
 )
 from asignacion_rapida import construir_plantilla_simple, validar_cuentas_iva_configuradas
-
-
-
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOADS_DIR = os.path.join(BASE_DIR, '..', "uploads")
@@ -68,12 +73,12 @@ def importar(empresa_id):
     bancos = bancos_repo.listar_bancos(empresa_id)
     return render_template("importar.html", bancos=bancos)
 
-
 @importacion_bp.route("/empresas/<int:empresa_id>/importar/vista-previa", methods=["GET", "POST"])
 @login_required
 @empresa_requerida
 def importar_vista_previa(empresa_id):
     if request.method == "POST":
+        limpiar_temporales_antiguos(os.path.join(UPLOADS_DIR, "_tmp"))
         archivos = [a for a in request.files.getlist("archivos_excel") if a and a.filename]
         if not archivos:
             flash("Selecciona uno o varios archivos Excel o PDF.", "error")
@@ -84,10 +89,19 @@ def importar_vista_previa(empresa_id):
         os.makedirs(carpeta_temporal, exist_ok=True)
 
         rutas = []
-        for archivo in archivos:
-            ruta = os.path.join(carpeta_temporal, archivo.filename)
-            archivo.save(ruta)
-            rutas.append(ruta)
+        try:
+            for archivo in archivos:
+                ruta = ruta_segura_en_directorio(
+                    carpeta_temporal,
+                    archivo.filename,
+                    extensiones_permitidas=EXTENSIONES_ESTADO_CUENTA,
+                )
+                archivo.save(ruta)
+                rutas.append(ruta)
+        except ErrorArchivoInseguro as e:
+            shutil.rmtree(carpeta_temporal, ignore_errors=True)
+            flash(str(e), "error")
+            return redirect(url_for("importacion.importar", empresa_id=empresa_id))
 
         session[f"preview_{token}"] = {
             "archivos": rutas,
@@ -112,6 +126,8 @@ def importar_vista_previa(empresa_id):
         hoja_actual = hoja or hojas[0]
         crudo = pdf_importer.vista_previa_cruda(primer_archivo, nombre_hoja=hoja_actual, filas=20) if primer_archivo.lower().endswith('.pdf') else vista_previa_cruda(primer_archivo, nombre_hoja=hoja_actual, filas=20)
     except Exception as e:
+        session.pop(f"preview_{token}", None)
+        shutil.rmtree(os.path.join(UPLOADS_DIR, "_tmp", str(token)), ignore_errors=True)
         flash(f"No se pudo leer el archivo: {e}", "error")
         return redirect(url_for("importacion.importar", empresa_id=empresa_id))
 
@@ -154,7 +170,6 @@ def importar_vista_previa(empresa_id):
         formato_tipo=FORMATO_VALOR_ABSOLUTO_Y_TIPO,
     )
 
-
 @importacion_bp.route("/empresas/<int:empresa_id>/importar/confirmar", methods=["POST"])
 @login_required
 @empresa_requerida
@@ -166,6 +181,14 @@ def importar_confirmar(empresa_id):
 
     datos = session.pop(f"preview_{token}")
     banco_id = datos["banco_id"]
+    if banco_id:
+        with get_connection() as con:
+            banco_valido = con.execute(
+                "SELECT id FROM bancos WHERE id = ? AND empresa_id = ?",
+                (banco_id, empresa_id),
+            ).fetchone()
+        if not banco_valido:
+            banco_id = None
     nombre_hoja = request.form.get("nombre_hoja") or None
 
     def _vacio_a_none(valor):
@@ -194,9 +217,26 @@ def importar_confirmar(empresa_id):
 
     total_importados = total_automaticos = total_pendientes = 0
     errores = []
+    todos_descuadres = []
 
     for ruta_temporal in datos["archivos"]:
-        ruta_final = os.path.join(carpeta_empresa, os.path.basename(ruta_temporal))
+        with open(ruta_temporal, "rb") as f_hash:
+            hash_sha256 = hashlib.sha256(f_hash.read()).hexdigest()
+
+        with get_connection() as con_chk:
+            ya_importado = con_chk.execute(
+                "SELECT id, nombre_archivo FROM documentos_importados WHERE empresa_id = ? AND hash_sha256 = ?",
+                (empresa_id, hash_sha256),
+            ).fetchone()
+        if ya_importado:
+            errores.append(f"El archivo '{os.path.basename(ruta_temporal)}' ya fue importado previamente (documento #{ya_importado['id']}).")
+            continue
+
+        ruta_final = ruta_segura_en_directorio(
+            carpeta_empresa,
+            os.path.basename(ruta_temporal),
+            extensiones_permitidas=EXTENSIONES_ESTADO_CUENTA,
+        )
         _mover_archivo_con_reintentos(ruta_temporal, ruta_final)
 
         try:
@@ -212,21 +252,26 @@ def importar_confirmar(empresa_id):
         cur = con.cursor()
         cur.execute(
             """INSERT INTO documentos_importados
-               (empresa_id, banco_id, nombre_archivo, ruta_archivo, nombre_hoja,
+               (empresa_id, banco_id, nombre_archivo, hash_sha256, ruta_archivo, nombre_hoja,
                 tipo_archivo, importado_por, estado)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'procesado')""",
-            (empresa_id, banco_id, os.path.basename(ruta_final), ruta_final, nombre_hoja, 'pdf' if ruta_final.lower().endswith('.pdf') else 'excel', g.usuario["id"]),
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'procesado')""",
+            (empresa_id, banco_id, os.path.basename(ruta_final), hash_sha256, ruta_final, nombre_hoja, 'pdf' if ruta_final.lower().endswith('.pdf') else 'excel', g.usuario["id"]),
         )
         documento_id = cur.lastrowid
         con.commit()
         con.close()
 
         movimientos_repo.insertar_movimientos(empresa_id, documento_id, resultado["movimientos"])
+        try:
+            cfdi_repo.conciliar_existentes(empresa_id)
+        except Exception:
+            pass
         clasificacion = movimientos_repo.clasificar_pendientes(empresa_id)
 
         total_importados += resultado["filas_importadas"]
         total_automaticos += clasificacion["automaticos"]
         total_pendientes += clasificacion["pendientes_restantes"]
+        todos_descuadres.extend(clasificacion.get("descuadres") or [])
 
     carpeta_temporal = os.path.join(UPLOADS_DIR, "_tmp", token)
     shutil.rmtree(carpeta_temporal, ignore_errors=True)
@@ -236,6 +281,13 @@ def importar_confirmar(empresa_id):
         f"automáticamente, {total_pendientes} pendientes de revisión.",
         "exito",
     )
+    if todos_descuadres:
+        ejemplos = " | ".join(d["mensaje"] for d in todos_descuadres[:3])
+        extra = f" (+{len(todos_descuadres) - 3} más)" if len(todos_descuadres) > 3 else ""
+        flash(
+            f"Atención: {len(todos_descuadres)} movimiento(s) coincidieron con una regla pero quedaron pendientes por descuadre: {ejemplos}{extra}",
+            "error",
+        )
     for err in errores:
         flash(err, "error")
 
@@ -243,46 +295,53 @@ def importar_confirmar(empresa_id):
         return redirect(url_for("reglas.pendientes_siguiente", empresa_id=empresa_id))
     return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
 
-
 @importacion_bp.route("/empresas/<int:empresa_id>/importar-cfdi", methods=["POST"])
 @login_required
 @empresa_requerida
 def importar_cfdi_ruta(empresa_id):
-    archivos = request.files.getlist("archivos_cfdi")
+    archivos = [a for a in request.files.getlist("archivos_cfdi") if a and a.filename]
     if not archivos:
         flash("Selecciona uno o varios archivos XML o un archivo ZIP.", "error")
         return redirect(url_for("importacion.importar", empresa_id=empresa_id))
 
+    temp_cfdi_dir = tempfile.mkdtemp(prefix="orange_cfdi_")
     rutas = []
-    import zipfile
-    import uuid
-    for archivo in archivos:
-        if archivo.filename.lower().endswith('.zip'):
-            ruta_zip = os.path.join(tempfile.gettempdir(), str(uuid.uuid4()) + ".zip")
-            archivo.save(ruta_zip)
-            extraer_dir = os.path.join(tempfile.gettempdir(), str(uuid.uuid4()))
-            os.makedirs(extraer_dir, exist_ok=True)
-            with zipfile.ZipFile(ruta_zip, 'r') as zip_ref:
-                zip_ref.extractall(extraer_dir)
-            for root, dirs, files in os.walk(extraer_dir):
-                for file in files:
-                    if file.lower().endswith('.xml'):
-                        rutas.append(os.path.join(root, file))
-            try:
-                os.remove(ruta_zip)
-            except:
-                pass
-        else:
-            ruta_temporal = os.path.join(tempfile.gettempdir(), str(uuid.uuid4()) + "_" + archivo.filename)
-            archivo.save(ruta_temporal)
-            rutas.append(ruta_temporal)
+    try:
+        try:
+            for idx, archivo in enumerate(archivos):
+                ruta_guardada = ruta_segura_en_directorio(
+                    temp_cfdi_dir,
+                    archivo.filename,
+                    extensiones_permitidas=EXTENSIONES_CFDI,
+                    prefijo_unico=True,
+                )
+                archivo.save(ruta_guardada)
+                if ruta_guardada.lower().endswith(".zip"):
+                    extraer_dir = os.path.join(temp_cfdi_dir, f"zip_{idx}_{uuid.uuid4().hex[:8]}")
+                    xmls = extraer_xmls_de_zip_seguro(ruta_guardada, extraer_dir)
+                    rutas.extend(xmls)
+                    try:
+                        os.remove(ruta_guardada)
+                    except OSError:
+                        pass
+                else:
+                    rutas.append(ruta_guardada)
+        except ErrorArchivoInseguro as e:
+            flash(str(e), "error")
+            return redirect(url_for("importacion.importar", empresa_id=empresa_id))
 
-    con = get_connection()
-    empresa = con.execute("SELECT rfc FROM empresas WHERE id = ?", (empresa_id,)).fetchone()
-    con.close()
+        with get_connection() as con:
+            empresa = con.execute("SELECT rfc FROM empresas WHERE id = ?", (empresa_id,)).fetchone()
 
-    tipo_hint = request.form.get("tipo_hint")  # 'emitido' | 'recibido' | None
-    resultado = cfdi_repo.importar_y_conciliar(empresa_id, rutas, empresa["rfc"] or "", tipo_hint=tipo_hint)
+        tipo_hint = request.form.get("tipo_hint")  # 'emitido' | 'recibido' | None
+        resultado = cfdi_repo.importar_y_conciliar(
+            empresa_id,
+            rutas,
+            (empresa["rfc"] if empresa else "") or "",
+            tipo_hint=tipo_hint,
+        )
+    finally:
+        shutil.rmtree(temp_cfdi_dir, ignore_errors=True)
 
     flash(
         f"{resultado['importados']} CFDI importados. "
@@ -297,5 +356,4 @@ def importar_cfdi_ruta(empresa_id):
     if resultado["pendientes_revision"] > 0:
         return redirect(url_for("configuracion.conciliaciones", empresa_id=empresa_id))
     return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
-
 

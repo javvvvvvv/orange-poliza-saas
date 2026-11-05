@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -14,7 +14,7 @@
 # Ley Federal del Derecho de Autor y tratados internacionales aplicables.
 # ============================================================================
 """
-Importador de CFDI (facturas electrÃ³nicas del SAT, formato XML).
+Importador de CFDI (facturas electrónicas del SAT, formato XML).
 
 Lee un CFDI 3.3 o 4.0 y extrae lo que necesita el motor para asociar la
 factura a un movimiento bancario y llenar el detalle de impuestos (F4):
@@ -27,7 +27,7 @@ factura a un movimiento bancario y llenar el detalle de impuestos (F4):
 
 No valida el sello ni el certificado (eso ya lo hizo el SAT al timbrar);
 solo lee los datos que ya vienen en el archivo. Soporta los namespaces
-de CFDI 3.3 y 4.0 porque en la prÃ¡ctica una empresa puede tener XMLs
+de CFDI 3.3 y 4.0 porque en la práctica una empresa puede tener XMLs
 viejos y nuevos mezclados en la misma carpeta.
 """
 
@@ -37,35 +37,30 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-
 NAMESPACES = {
     "cfdi40": "http://www.sat.gob.mx/cfd/4",
     "cfdi33": "http://www.sat.gob.mx/cfd/3",
     "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital",
 }
 
-
 class ErrorCFDI(Exception):
     pass
-
 
 @dataclass
 class ImpuestoTraslado:
     base: float
     importe: float
     tasa: float          # ej. 0.16
-    impuesto: str = "002"  # 002 = IVA (catÃ¡logo SAT c_Impuesto)
-
+    impuesto: str = "002"  # 002 = IVA (catálogo SAT c_Impuesto)
 
 @dataclass
 class ImpuestoRetenido:
     """Un nodo <Retencion> del CFDI. A diferencia de <Traslado>, el XML
-    no trae Base ni TasaOCuota â€” solo Impuesto e Importe; la base real
+    no trae Base ni TasaOCuota — solo Impuesto e Importe; la base real
     se toma del SubTotal del comprobante al construir el ImpuestoPoliza
     (ver cfdi_matcher.py / movimientos_repo.py)."""
     importe: float
-    impuesto: str = "002"  # 001 = ISR, 002 = IVA (catÃ¡logo SAT c_Impuesto)
-
+    impuesto: str = "002"  # 001 = ISR, 002 = IVA (catálogo SAT c_Impuesto)
 
 @dataclass
 class CFDI:
@@ -79,12 +74,11 @@ class CFDI:
     subtotal: float
     serie: Optional[str]
     folio: Optional[str]
-    tipo_comprobante: str  # 'I' ingreso, 'E' egreso, 'P' pago, 'N' nÃ³mina, 'T' traslado
+    tipo_comprobante: str  # 'I' ingreso, 'E' egreso, 'P' pago, 'N' nómina, 'T' traslado
     impuestos_trasladados: list = field(default_factory=list)  # list[ImpuestoTraslado]
     impuestos_retenidos: list = field(default_factory=list)  # list[ImpuestoRetenido]
     uuids_relacionados: list = field(default_factory=list) # UUIDs de las facturas pagadas (si es REP)
     archivo_origen: str = ""
-
 
 def _detectar_namespace_comprobante(raiz) -> str:
     tag = raiz.tag
@@ -94,15 +88,14 @@ def _detectar_namespace_comprobante(raiz) -> str:
         return "cfdi33"
     raise ErrorCFDI(f"No se reconoce el namespace del comprobante: {tag}")
 
-
 def importar_cfdi(ruta_xml: str) -> CFDI:
     """Lee un archivo CFDI XML y regresa un objeto CFDI con los datos
-    normalizados. Lanza ErrorCFDI si el archivo no es un CFDI vÃ¡lido o
+    normalizados. Lanza ErrorCFDI si el archivo no es un CFDI válido o
     le falta el timbre fiscal (UUID)."""
     try:
         arbol = ET.parse(ruta_xml)
     except ET.ParseError as e:
-        raise ErrorCFDI(f"El archivo '{ruta_xml}' no es un XML vÃ¡lido: {e}")
+        raise ErrorCFDI(f"El archivo '{ruta_xml}' no es un XML válido: {e}")
 
     raiz = arbol.getroot()
     ns_key = _detectar_namespace_comprobante(raiz)
@@ -115,7 +108,7 @@ def importar_cfdi(ruta_xml: str) -> CFDI:
     try:
         fecha = datetime.strptime(fecha_str[:19], "%Y-%m-%dT%H:%M:%S")
     except (TypeError, ValueError):
-        raise ErrorCFDI(f"Fecha invÃ¡lida en el CFDI '{ruta_xml}': {fecha_str!r}")
+        raise ErrorCFDI(f"Fecha inválida en el CFDI '{ruta_xml}': {fecha_str!r}")
 
     emisor = raiz.find(f"{{{ns_cfdi}}}Emisor")
     receptor = raiz.find(f"{{{ns_cfdi}}}Receptor")
@@ -132,7 +125,7 @@ def importar_cfdi(ruta_xml: str) -> CFDI:
     if not uuid:
         raise ErrorCFDI(
             f"El CFDI '{ruta_xml}' no tiene UUID (timbre fiscal). "
-            f"Â¿Es un XML sin timbrar?"
+            f"¿Es un XML sin timbrar?"
         )
 
     tipo_comprobante = attr("TipoDeComprobante", "I")
@@ -211,9 +204,8 @@ def importar_cfdi(ruta_xml: str) -> CFDI:
         archivo_origen=ruta_xml,
     )
 
-
 def importar_carpeta_cfdi(ruta_carpeta: str) -> dict:
-    """Importa todos los .xml de una carpeta. Regresa los CFDIs vÃ¡lidos
+    """Importa todos los .xml de una carpeta. Regresa los CFDIs válidos
     y una lista de errores (archivo + motivo) para los que no se
     pudieron leer, en vez de tronar toda la carga por un archivo malo."""
     import glob

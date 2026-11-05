@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -24,13 +24,23 @@ y los convierte en un DataFrame de pandas para reusar la logica
 de excel_importer.py.
 """
 
-import pdfplumber
+try:
+    import pdfplumber
+except ImportError:
+    pdfplumber = None
+
 import pandas as pd
 from typing import Optional
-from backend.app.importers.excel_importer import (
-    procesar_dataframe, 
-    ConfiguracionImportacion
-)
+try:
+    from backend.app.importers.excel_importer import (
+        procesar_dataframe, 
+        ConfiguracionImportacion
+    )
+except ImportError:
+    from excel_importer import (
+        procesar_dataframe, 
+        ConfiguracionImportacion
+    )
 
 def _pdf_a_dataframe(ruta_archivo: str) -> pd.DataFrame:
     """

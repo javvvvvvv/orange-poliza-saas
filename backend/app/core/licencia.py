@@ -42,21 +42,24 @@ import os
 from datetime import date, datetime
 
 _RUTA_DEFECTO = os.path.join(os.path.dirname(__file__), "..", "..", "..", "licencia", "orange.lic")
-_LLAVE = hashlib.sha256(b"OrangeCrew-JavierIllan-licencia-2026-nucleo").digest()
+_FALLBACK_DEV_SEED = "OrangeCrew-JavierIllan-licencia-2026-nucleo"
 
+def _obtener_llave() -> bytes:
+    """Obtiene la llave HMAC desde la variable de entorno ORANGE_LICENCIA_SECRET.
+    En desarrollo local sin variable configurada, usa la semilla por defecto."""
+    secreto_env = (os.environ.get("ORANGE_LICENCIA_SECRET") or "").strip()
+    semilla = secreto_env if secreto_env else _FALLBACK_DEV_SEED
+    return hashlib.sha256(semilla.encode("utf-8")).digest()
 
 class LicenciaInvalida(Exception):
     """La licencia no existe, está corrupta/alterada, expiró o la
     empresa no está autorizada."""
 
-
 def _firmar(payload: bytes) -> str:
-    return hmac.new(_LLAVE, payload, hashlib.sha256).hexdigest()
-
+    return hmac.new(_obtener_llave(), payload, hashlib.sha256).hexdigest()
 
 def _normalizar(nombre: str) -> str:
     return " ".join((nombre or "").strip().upper().split())
-
 
 def _cargar_archivo(ruta: str, verificar_firma: bool = True) -> dict:
     if not os.path.exists(ruta):
@@ -80,7 +83,6 @@ def _cargar_archivo(ruta: str, verificar_firma: bool = True) -> dict:
         )
 
     return json.loads(payload)
-
 
 def verificar_licencia_empresa(nombre_empresa: str, ruta_licencia: str = None) -> dict:
     """Levanta LicenciaInvalida si no se puede usar el sistema para

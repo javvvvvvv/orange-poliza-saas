@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
@@ -27,7 +27,7 @@
     <div class="text-lg font-semibold text-white truncate" title="{{ usuario_actual.organizacion_nombre if usuario_actual.rol_global != 'superadmin' else 'Orange Crew SaaS' }}">
       {{ usuario_actual.organizacion_nombre if usuario_actual.rol_global != 'superadmin' else 'Orange Crew SaaS' }}
     </div>
-    <div class="text-xs text-slate-400">{% if usuario_actual.rol_global == 'superadmin' %}AdministraciÃ³n Global{% else %}Motor Contable{% endif %}</div>
+    <div class="text-xs text-slate-400">{% if usuario_actual.rol_global == 'superadmin' %}Administración Global{% else %}Motor Contable{% endif %}</div>
   </div>
 
   {% if empresas_usuario %}
@@ -45,24 +45,22 @@
   </div>
   {% endif %}
 
-  
   <nav class="px-3 py-2 text-sm border-b border-marino-700 space-y-1">
     {% if usuario_actual.rol_global == 'superadmin' %}
       <a href="{{ url_for('saas.saas_dashboard') }}" class="block px-3 py-2 rounded hover:bg-marino-800 text-naranja-500 font-semibold">SaaS Dashboard</a>
     {% else %}
       <a href="{{ url_for('empresas.mi_despacho') }}" class="block px-3 py-2 rounded hover:bg-marino-800 text-naranja-500 font-semibold">Mi Despacho</a>
     {% endif %}
-</nav>
+  </nav>
 
   {% if request.view_args and request.view_args.get('empresa_id') %}
-
   {% set eid = request.view_args.get('empresa_id') %}
   <nav class="flex-1 px-3 py-4 space-y-1 text-sm">
     <a href="/empresas/{{ eid }}/" class="block px-3 py-2 rounded hover:bg-marino-800">1. Dashboard</a>
 
-    <div class="text-xs uppercase text-slate-500 px-3 pt-3 pb-1">ConfiguraciÃ³n inicial</div>
+    <div class="text-xs uppercase text-slate-500 px-3 pt-3 pb-1">Configuración inicial</div>
     <a href="/empresas/{{ eid }}/ajustes" class="block px-3 py-2 rounded hover:bg-marino-800">Ajustes e Impuestos</a>
-    <a href="/empresas/{{ eid }}/catalogo" class="block px-3 py-2 rounded hover:bg-marino-800">CatÃ¡logo de cuentas</a>
+    <a href="/empresas/{{ eid }}/catalogo" class="block px-3 py-2 rounded hover:bg-marino-800">Catálogo de cuentas</a>
     <a href="/empresas/{{ eid }}/configuracion" class="block px-3 py-2 rounded hover:bg-marino-800">IVA y bancos</a>
     <a href="/empresas/{{ eid }}/usuarios" class="block px-3 py-2 rounded hover:bg-marino-800">Usuarios</a>
 
@@ -73,7 +71,7 @@
     <a href="/empresas/{{ eid }}/reglas" class="block px-3 py-2 rounded hover:bg-marino-800">Reglas guardadas</a>
 
     <div class="text-xs uppercase text-slate-500 px-3 pt-3 pb-1">Resultado</div>
-        <div>
+    <div>
         <button type="button" onclick="document.getElementById('modal-generar').style.display='flex';" class="w-full text-left px-3 py-2 rounded hover:bg-marino-800">
             4. Generar pólizas
         </button>
@@ -102,39 +100,26 @@
             </div>
         </div>
     </div>
-    <a href="/empresas/{{ eid }}/polizas" class="block px-3 py-2 rounded hover:bg-marino-800">5. Revisar pÃ³lizas</a>
+    <a href="/empresas/{{ eid }}/polizas" class="block px-3 py-2 rounded hover:bg-marino-800">5. Revisar pólizas</a>
     <a href="/empresas/{{ eid }}/documentos" class="block px-3 py-2 rounded hover:bg-marino-800">Documentos / estado marcado</a>
     <a href="/empresas/{{ eid }}/polizas/exportar" class="block px-3 py-2 rounded hover:bg-marino-800">6. Exportar .xls</a>
-      <div>
-          <!-- Antes esto abria un modal que le pedia al NAVEGADOR llamar
-               directo a http://<host>:5005/empresas para armar un <select>
-               con el nombre de la empresa CONTPAQi -- ahi era facil elegir
-               el nombre "bonito" en vez del nombre interno, y ademas
-               dependia de que el navegador del usuario pudiera alcanzar el
-               puerto 5005 directamente. Ya no hace falta: el nombre interno
-               se configura una sola vez en Configuracion > Catalogo y se
-               usa siempre de ahi. -->
-          <form action="/empresas/{{ eid }}/polizas/exportar_sdk" method="POST"
-                onsubmit="return confirm('¿Exportar las pólizas de esta empresa a CONTPAQi?');">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-              <button type="submit" class="block w-full text-left px-3 py-2 rounded hover:bg-marino-800 text-naranja-400 font-bold">
-                7. Sincronizar CONTPAQi (SDK)
-              </button>
-          </form>
-      </div>
-            <div class="text-xs uppercase text-slate-500 px-3 pt-4 pb-1">Mantenimiento</div>
-        
-        <form action="/empresas/{{ eid }}/movimientos/limpiar" method="post" onsubmit="return confirm('¡CUIDADO! ¿Seguro que deseas ELIMINAR TODOS los movimientos y pólizas de esta empresa? Esto dejará la empresa en blanco para hacer una carga totalmente nueva.');">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="w-full text-left px-3 py-2 rounded hover:bg-red-900 text-red-400 font-bold">Limpiar Polizas y Movimientos</button>
-        </form>
-</nav>
+    <div>
+        <button type="button" onclick="iniciarSincronizacionSdk({{ eid }})" class="block w-full text-left px-3 py-2 rounded hover:bg-marino-800 text-naranja-400 font-bold">
+          7. Sincronizar CONTPAQi (SDK)
+        </button>
+    </div>
+    <div class="text-xs uppercase text-slate-500 px-3 pt-4 pb-1">Mantenimiento</div>
+    <form action="/empresas/{{ eid }}/movimientos/limpiar" method="post" onsubmit="return confirm('¡CUIDADO! ¿Seguro que deseas ELIMINAR TODOS los movimientos y pólizas de esta empresa? Esto dejará la empresa en blanco para hacer una carga totalmente nueva.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="w-full text-left px-3 py-2 rounded hover:bg-red-900 text-red-400 font-bold">Limpiar Pólizas y Movimientos</button>
+    </form>
+  </nav>
   {% endif %}
 
   <div class="px-5 py-4 border-t border-marino-700 text-xs">
-    <a href="/empresas" class="block mb-2 text-naranja-500 hover:text-naranja-400 font-semibold">â† Volver al Inicio</a>
-      <div class="text-slate-300">{{ usuario_actual.nombre }}</div>
-    <a href="/logout" class="text-slate-500 hover:text-slate-300">Cerrar sesiÃ³n</a>
+    <a href="/empresas" class="block mb-2 text-naranja-500 hover:text-naranja-400 font-semibold">← Volver al Inicio</a>
+    <div class="text-slate-300">{{ usuario_actual.nombre }}</div>
+    <a href="/logout" class="text-slate-500 hover:text-slate-300">Cerrar sesión</a>
   </div>
 </aside>
 {% endif %}
@@ -158,11 +143,186 @@
   </div>
 </main>
 
+<!-- Modal Global de Progreso SDK CONTPAQi -->
+<div id="modal-sdk-progreso" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60" style="display: none;">
+  <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden">
+    <div class="px-6 py-4 bg-marino-900 text-white flex justify-between items-center">
+      <div class="font-bold text-base">Sincronización con CONTPAQi (SDK)</div>
+      <button type="button" id="sdk-btn-cerrar-x" onclick="cerrarModalSdk()" class="text-slate-400 hover:text-white text-xl font-bold">&times;</button>
+    </div>
+    <div class="p-6 space-y-4">
+      <div id="sdk-info-previa" class="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm space-y-1.5">
+        <div>Empresa CONTPAQi: <strong id="sdk-lbl-empresa" class="font-mono text-marino-900">Cargando...</strong></div>
+        <div>Total de pólizas a enviar: <strong id="sdk-lbl-total" class="text-marino-900">0</strong></div>
+        <div>Pólizas con CFDI (UUID) asociado: <strong id="sdk-lbl-cfdi" class="text-emerald-600">0</strong></div>
+      </div>
+
+      <div>
+        <div class="flex justify-between text-xs font-semibold text-slate-600 mb-1">
+          <span id="sdk-lbl-estado">Verificando pólizas...</span>
+          <span id="sdk-lbl-pct">0%</span>
+        </div>
+        <div class="w-full bg-slate-200 rounded-full h-4 overflow-hidden">
+          <div id="sdk-barra" class="bg-naranja-500 h-4 rounded-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+        <div id="sdk-lbl-detalle" class="text-xs text-slate-500 mt-1.5">Preparando conexión con el puente CONTPAQi...</div>
+      </div>
+
+      <div id="sdk-alerta" class="hidden px-4 py-3 rounded-lg text-xs font-medium"></div>
+    </div>
+    <div class="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
+      <button type="button" id="sdk-btn-cancelar" onclick="cerrarModalSdk()" class="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold">
+        Cerrar
+      </button>
+      <button type="button" id="sdk-btn-iniciar" onclick="ejecutarEnvioPorLotesSdk()" class="hidden px-5 py-2 bg-naranja-500 hover:bg-naranja-600 text-white rounded-lg text-xs font-bold shadow-sm">
+        🚀 Confirmar y Enviar Ahora
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+  window._sdkEstado = { empresaId: null, polizaIds: [], enCurso: false, cancelar: false };
+
+  function cerrarModalSdk() {
+    if (window._sdkEstado.enCurso) {
+      if (!confirm('¿Deseas detener el envío después del lote actual?')) return;
+      window._sdkEstado.cancelar = true;
+      return;
+    }
+    document.getElementById('modal-sdk-progreso').style.display = 'none';
+  }
+
+  async function iniciarSincronizacionSdk(empresaId) {
+    window._sdkEstado = { empresaId: empresaId, polizaIds: [], enCurso: false, cancelar: false };
+    const modal = document.getElementById('modal-sdk-progreso');
+    const lblEmp = document.getElementById('sdk-lbl-empresa');
+    const lblTot = document.getElementById('sdk-lbl-total');
+    const lblCfdi = document.getElementById('sdk-lbl-cfdi');
+    const lblEstado = document.getElementById('sdk-lbl-estado');
+    const lblPct = document.getElementById('sdk-lbl-pct');
+    const lblDet = document.getElementById('sdk-lbl-detalle');
+    const barra = document.getElementById('sdk-barra');
+    const alerta = document.getElementById('sdk-alerta');
+    const btnIniciar = document.getElementById('sdk-btn-iniciar');
+
+    lblEmp.innerText = 'Consultando...';
+    lblTot.innerText = '...';
+    lblCfdi.innerText = '...';
+    lblEstado.innerText = 'Verificando pólizas y CFDIs asociados...';
+    lblPct.innerText = '0%';
+    barra.style.width = '0%';
+    barra.classList.remove('bg-emerald-600');
+    barra.classList.add('bg-naranja-500');
+    lblDet.innerText = 'Validando cuadre contable y facturas asociadas...';
+    alerta.className = 'hidden';
+    btnIniciar.classList.add('hidden');
+    modal.style.display = 'flex';
+
+    try {
+      const res = await fetch(`/empresas/${empresaId}/polizas/sdk_resumen`);
+      const data = await res.json();
+      if (!data.exito) {
+        lblEstado.innerText = 'No se puede iniciar la exportación';
+        alerta.className = 'px-4 py-3 rounded-lg text-xs font-medium bg-red-50 text-red-700 border border-red-200';
+        alerta.innerText = data.mensaje || 'Error al verificar pólizas.';
+        return;
+      }
+      window._sdkEstado.polizaIds = data.poliza_ids || [];
+      lblEmp.innerText = data.nombre_contpaqi;
+      lblTot.innerText = data.total_polizas;
+      lblCfdi.innerText = `${data.con_cfdi} de ${data.total_polizas}`;
+
+      if (data.total_polizas === 0) {
+        lblEstado.innerText = 'No hay pólizas generadas para enviar.';
+        lblDet.innerText = 'Genera primero las pólizas en el paso 4.';
+        return;
+      }
+
+      lblEstado.innerText = `Listo para enviar ${data.total_polizas} póliza(s) a CONTPAQi`;
+      lblDet.innerText = `Se enviarán en lotes automáticos con sus ${data.con_cfdi} asociación(es) de CFDI.`;
+      btnIniciar.classList.remove('hidden');
+    } catch (e) {
+      lblEstado.innerText = 'Error de conexión';
+      alerta.className = 'px-4 py-3 rounded-lg text-xs font-medium bg-red-50 text-red-700 border border-red-200';
+      alerta.innerText = 'No se pudo consultar el resumen de pólizas: ' + e;
+    }
+  }
+
+  async function ejecutarEnvioPorLotesSdk() {
+    const { empresaId, polizaIds } = window._sdkEstado;
+    if (!polizaIds.length || window._sdkEstado.enCurso) return;
+
+    window._sdkEstado.enCurso = true;
+    window._sdkEstado.cancelar = false;
+
+    const btnIniciar = document.getElementById('sdk-btn-iniciar');
+    const lblEstado = document.getElementById('sdk-lbl-estado');
+    const lblPct = document.getElementById('sdk-lbl-pct');
+    const lblDet = document.getElementById('sdk-lbl-detalle');
+    const barra = document.getElementById('sdk-barra');
+    const alerta = document.getElementById('sdk-alerta');
+    const csrfToken = "{{ csrf_token() }}";
+
+    btnIniciar.classList.add('hidden');
+    alerta.className = 'hidden';
+
+    const tamanoLote = 10;
+    const total = polizaIds.length;
+    let enviadas = 0;
+
+    for (let i = 0; i < total; i += tamanoLote) {
+      if (window._sdkEstado.cancelar) {
+        lblEstado.innerText = 'Envío detenido por el usuario';
+        alerta.className = 'px-4 py-3 rounded-lg text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200';
+        alerta.innerText = `Se enviaron ${enviadas} de ${total} pólizas antes de detener.`;
+        window._sdkEstado.enCurso = false;
+        return;
+      }
+
+      const lote = polizaIds.slice(i, i + tamanoLote);
+      const hasta = Math.min(i + tamanoLote, total);
+      lblEstado.innerText = `Enviando pólizas ${i + 1} a ${hasta} de ${total}...`;
+      lblDet.innerText = `Inyectando movimientos y asociando UUIDs en CONTPAQi...`;
+
+      try {
+        const res = await fetch(`/empresas/${empresaId}/polizas/exportar_sdk_lote`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken
+          },
+          body: JSON.stringify({ poliza_ids: lote })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.exito) {
+          lblEstado.innerText = 'Error durante la sincronización';
+          alerta.className = 'px-4 py-3 rounded-lg text-xs font-medium bg-red-50 text-red-700 border border-red-200';
+          alerta.innerText = (data && data.mensaje) ? data.mensaje : 'Fallo al enviar el lote al puente CONTPAQi.';
+          window._sdkEstado.enCurso = false;
+          return;
+        }
+        enviadas += (data.enviadas || lote.length);
+        const pct = Math.round((enviadas / total) * 100);
+        barra.style.width = `${pct}%`;
+        lblPct.innerText = `${pct}%`;
+        lblDet.innerText = `${enviadas} de ${total} pólizas creadas exitosamente en CONTPAQi.`;
+      } catch (err) {
+        lblEstado.innerText = 'Error de red durante el envío';
+        alerta.className = 'px-4 py-3 rounded-lg text-xs font-medium bg-red-50 text-red-700 border border-red-200';
+        alerta.innerText = `Error de red tras enviar ${enviadas} de ${total} pólizas: ${err}`;
+        window._sdkEstado.enCurso = false;
+        return;
+      }
+    }
+
+    window._sdkEstado.enCurso = false;
+    lblEstado.innerText = '¡Sincronización completada con éxito!';
+    barra.classList.remove('bg-naranja-500');
+    barra.classList.add('bg-emerald-600');
+    alerta.className = 'px-4 py-3 rounded-lg text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200';
+    alerta.innerText = `✅ Se inyectaron las ${enviadas} pólizas y sus CFDIs asociados en CONTPAQi exitosamente.`;
+  }
+</script>
 </body>
 </html>
-
-
-
-
-
-

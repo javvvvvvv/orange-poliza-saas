@@ -5,8 +5,12 @@ __pycache__/
 *.pyc
 
 # Credenciales y datos sensibles
+.env
 webapp/.env
 webapp/secret.key
+licencia/orange.lic
+licencia/clave.txt
+**/_notas_*.md
 
 # Artefactos locales (temporales/subidos), bases sqlite viejas y logs
 webapp/uploads/
@@ -20,9 +24,33 @@ webapp/uploads/
 !database/plantilla_encabezados_contpaqi.xlsx
 !database/ejemplo_contpaqi_referencia.xls
 
+# Scripts temporales de depuracion y scratch
+scratch/
+dump_*.py
+test_*.ps1
+test_*.py
+test_*.txt
+*.txt
+!requirements.txt
+!webapp/requirements.txt
+diff_backup.txt
+bridge_debug.txt
+crea_sig.txt
+poliza_methods.txt
+vtables.txt
+check_asoc.ps1
+introspect_poliza.ps1
+get_poliza_members.ps1
+contpaqi-bridge/herramientas/*.ps1
+contpaq_sdk.py
+contpaqi_sdk.zip
+contpaqi_sdk_ext/
+AndresRamos_SDK/
+webapp/test_db.py
+
 # Sistema operativo / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-licencia/orange.lic
+

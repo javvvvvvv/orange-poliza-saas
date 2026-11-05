@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
 # Autor Legal y Titular de Derechos: JAVIER ILLAN GONZALEZ
@@ -18,17 +18,31 @@ import sys
 import os
 
 # Asegurar imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "webapp")))
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend", "app", "core")))
+base_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if base_root not in sys.path:
+    sys.path.insert(0, base_root)
+webapp_dir = os.path.join(base_root, "webapp")
+if webapp_dir not in sys.path:
+    sys.path.insert(0, webapp_dir)
+core_dir = os.path.join(base_root, "backend", "app", "core")
+if core_dir not in sys.path:
+    sys.path.insert(0, core_dir)
 
-from webapp.app import app
+from app import app
 from rule_engine import Regla
-from policy_generator import PlantillaPoliza
 
 class TestMotorContableAPI(unittest.TestCase):
     def setUp(self):
         self.app = app.test_client()
         self.app.testing = True
+        self.headers = {"X-API-Key": "orange_api_key_2026"}
+
+    def test_api_classify_sin_auth_falla(self):
+        payload = {
+            "movimientos": [{"fecha": "2026-08-20T10:00:00", "descripcion": "TEST", "total": 100, "tipo": "egreso"}]
+        }
+        res = self.app.post("/api/v1/engine/classify", json=payload)
+        self.assertEqual(res.status_code, 401)
 
     def test_api_classify_sin_match(self):
         payload = {
@@ -38,7 +52,7 @@ class TestMotorContableAPI(unittest.TestCase):
             "reglas": [],
             "plantillas": []
         }
-        res = self.app.post("/api/v1/engine/classify", json=payload)
+        res = self.app.post("/api/v1/engine/classify", json=payload, headers=self.headers)
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertEqual(data["procesados"], 1)
@@ -72,7 +86,7 @@ class TestMotorContableAPI(unittest.TestCase):
                 }
             ]
         }
-        res = self.app.post("/api/v1/engine/classify", json=payload)
+        res = self.app.post("/api/v1/engine/classify", json=payload, headers=self.headers)
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertEqual(data["procesados"], 1)
@@ -94,4 +108,3 @@ class TestMotorContableAPI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

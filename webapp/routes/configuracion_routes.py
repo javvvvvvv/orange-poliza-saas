@@ -12,8 +12,18 @@ import shutil
 from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for, send_file, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from auth import login_required, empresa_requerida, obtener_empresas_del_usuario
+from auth import (
+    login_required,
+    empresa_requerida,
+    obtener_empresas_del_usuario,
+    validar_rol_empresa_asignable,
+)
 from db import get_connection, hay_usuarios
+from upload_security import (
+    ruta_segura_en_directorio,
+    ErrorArchivoInseguro,
+    EXTENSIONES_CATALOGO,
+)
 import usuarios_repo
 import bancos_repo
 import catalogo_repo
@@ -23,16 +33,12 @@ import movimientos_repo
 import reglas_generales_repo
 from rules_repository import RepositorioReglas
 
-
 from excel_importer import (
     importar_excel, ConfiguracionImportacion, FORMATO_COLUMNAS_SEPARADAS,
     FORMATO_COLUMNA_CON_SIGNO, FORMATO_VALOR_ABSOLUTO_Y_TIPO,
     listar_hojas, vista_previa, vista_previa_cruda, detectar_fila_encabezado
 )
 from asignacion_rapida import construir_plantilla_simple, validar_cuentas_iva_configuradas
-
-
-
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOADS_DIR = os.path.join(BASE_DIR, '..', "uploads")
@@ -72,15 +78,26 @@ def catalogo(empresa_id):
                 if not archivo or not archivo.filename:
                     flash("Selecciona un archivo de Excel.", "error")
                     return redirect(url_for("configuracion.catalogo", empresa_id=empresa_id))
-                ruta_temporal = os.path.join(tempfile.gettempdir(), archivo.filename)
-                archivo.save(ruta_temporal)
-                total = catalogo_repo.importar_desde_excel(empresa_id, ruta_temporal)
+                ruta_temporal = ruta_segura_en_directorio(
+                    tempfile.gettempdir(),
+                    archivo.filename,
+                    extensiones_permitidas=EXTENSIONES_CATALOGO,
+                    prefijo_unico=True,
+                )
+                try:
+                    archivo.save(ruta_temporal)
+                    total = catalogo_repo.importar_desde_excel(empresa_id, ruta_temporal)
+                finally:
+                    try:
+                        if os.path.exists(ruta_temporal):
+                            os.remove(ruta_temporal)
+                    except OSError:
+                        pass
             elif modo == "texto":
                 total = catalogo_repo.importar_desde_texto(empresa_id, request.form.get("texto_catalogo", ""))
             elif modo == "contpaqi":
-                con = get_connection()
-                ruta_contpaqi = con.execute("SELECT base_datos_contpaqi FROM empresas WHERE id = ?", (empresa_id,)).fetchone()[0]
-                con.close()
+                with get_connection() as con:
+                    ruta_contpaqi = con.execute("SELECT base_datos_contpaqi FROM empresas WHERE id = ?", (empresa_id,)).fetchone()[0]
                 if not ruta_contpaqi:
                     raise Exception("Falta configurar la ruta CONTPAQi de la empresa en Configuracion.")
                 total = catalogo_repo.sincronizar_desde_contpaqi(empresa_id, ruta_contpaqi)
@@ -95,7 +112,6 @@ def catalogo(empresa_id):
     cuentas = catalogo_repo.listar(empresa_id, buscar=buscar)
     return render_template("catalogo.html", cuentas=cuentas, buscar=buscar or "")
 
-
 @configuracion_bp.route("/empresas/<int:empresa_id>/catalogo/eliminar-todo", methods=["POST"])
 @login_required
 @empresa_requerida
@@ -103,7 +119,6 @@ def catalogo_eliminar_todo(empresa_id):
     catalogo_repo.eliminar_todo(empresa_id)
     flash("Catálogo eliminado.", "exito")
     return redirect(url_for("configuracion.catalogo", empresa_id=empresa_id))
-
 
 # --- Configuración: IVA y bancos ---
 
@@ -151,7 +166,6 @@ def configuracion(empresa_id):
         empresas_bridge=empresas_bridge
     )
 
-
 @configuracion_bp.route("/empresas/<int:empresa_id>/bancos/nuevo", methods=["POST"])
 @login_required
 @empresa_requerida
@@ -163,15 +177,16 @@ def banco_nuevo(empresa_id):
     flash("Banco agregado.", "exito")
     return redirect(url_for("configuracion.configuracion", empresa_id=empresa_id))
 
-
 @configuracion_bp.route("/empresas/<int:empresa_id>/bancos/<int:banco_id>/eliminar", methods=["POST"])
 @login_required
 @empresa_requerida
 def banco_eliminar(empresa_id, banco_id):
-    bancos_repo.eliminar_banco(banco_id)
+    eliminado = bancos_repo.eliminar_banco(banco_id, empresa_id=empresa_id)
+    if not eliminado:
+        flash("Banco no encontrado en esta empresa.", "error")
+        return redirect(url_for("configuracion.configuracion", empresa_id=empresa_id)), 404
     flash("Banco eliminado.", "exito")
     return redirect(url_for("configuracion.configuracion", empresa_id=empresa_id))
-
 
 @configuracion_bp.route("/empresas/<int:empresa_id>/reglas-generales/nueva", methods=["POST"])
 @login_required
@@ -185,15 +200,16 @@ def regla_general_nueva(empresa_id):
     flash("Línea agregada a las reglas generales.", "exito")
     return redirect(url_for("configuracion.configuracion", empresa_id=empresa_id))
 
-
 @configuracion_bp.route("/empresas/<int:empresa_id>/reglas-generales/<int:linea_id>/eliminar", methods=["POST"])
 @login_required
 @empresa_requerida
 def regla_general_eliminar(empresa_id, linea_id):
-    reglas_generales_repo.eliminar(linea_id)
+    eliminada = reglas_generales_repo.eliminar(linea_id, empresa_id=empresa_id)
+    if not eliminada:
+        flash("Línea no encontrada en esta empresa.", "error")
+        return redirect(url_for("configuracion.configuracion", empresa_id=empresa_id)), 404
     flash("Línea eliminada.", "exito")
     return redirect(url_for("configuracion.configuracion", empresa_id=empresa_id))
-
 
 # --- Documentos importados y estado de cuenta marcado ---
 
@@ -201,26 +217,24 @@ def regla_general_eliminar(empresa_id, linea_id):
 @login_required
 @empresa_requerida
 def documentos(empresa_id):
-    con = get_connection()
-    filas = con.execute(
-        """SELECT d.*, b.nombre AS banco_nombre,
-                  (SELECT COUNT(*) FROM movimientos m WHERE m.documento_id = d.id) AS total_movimientos,
-                  (SELECT COUNT(*) FROM movimientos m WHERE m.documento_id = d.id AND m.poliza_id IS NOT NULL) AS con_poliza
-           FROM documentos_importados d
-           LEFT JOIN bancos b ON b.id = d.banco_id
-           WHERE d.empresa_id = ? ORDER BY d.importado_en DESC""",
-        (empresa_id,),
-    ).fetchall()
-    con.close()
+    with get_connection() as con:
+        filas = con.execute(
+            """SELECT d.*, b.nombre AS banco_nombre,
+                      (SELECT COUNT(*) FROM movimientos m WHERE m.documento_id = d.id) AS total_movimientos,
+                      (SELECT COUNT(*) FROM movimientos m WHERE m.documento_id = d.id AND m.poliza_id IS NOT NULL) AS con_poliza
+               FROM documentos_importados d
+               LEFT JOIN bancos b ON b.id = d.banco_id
+               WHERE d.empresa_id = ? ORDER BY d.importado_en DESC""",
+            (empresa_id,),
+        ).fetchall()
     return render_template("documentos.html", documentos=filas)
-
 
 @configuracion_bp.route("/empresas/<int:empresa_id>/documentos/<int:documento_id>/marcado")
 @login_required
 @empresa_requerida
 def documento_marcado(empresa_id, documento_id):
     try:
-        ruta, marcados = marcado_repo.generar_marcado(documento_id)
+        ruta, marcados = marcado_repo.generar_marcado(documento_id, empresa_id=empresa_id)
     except ValueError as e:
         flash(str(e), "error")
         return redirect(url_for("configuracion.documentos", empresa_id=empresa_id))
@@ -230,34 +244,55 @@ def documento_marcado(empresa_id, documento_id):
 
     return send_file(ruta, as_attachment=True, download_name=os.path.basename(ruta))
 
-
-# --- Conciliaciones de CFDI sugeridas (pagos parciales, combinados, etc.) ---
+# --- Conciliaciones de CFDI sugeridas y confirmadas ---
 
 @configuracion_bp.route("/empresas/<int:empresa_id>/conciliaciones")
 @login_required
 @empresa_requerida
 def conciliaciones(empresa_id):
     propuestas = cfdi_repo.listar_propuestas_pendientes(empresa_id)
-    return render_template("conciliaciones.html", propuestas=propuestas)
+    confirmadas = cfdi_repo.listar_conciliaciones_confirmadas(empresa_id)
+    with get_connection() as con:
+        total_movs = con.execute("SELECT COUNT(*) FROM movimientos WHERE empresa_id = ?", (empresa_id,)).fetchone()[0]
+        total_cfdis = con.execute("SELECT COUNT(*) FROM cfdis WHERE empresa_id = ?", (empresa_id,)).fetchone()[0]
+    return render_template(
+        "conciliaciones.html",
+        propuestas=propuestas,
+        confirmadas=confirmadas,
+        total_movs=total_movs,
+        total_cfdis=total_cfdis,
+    )
 
+@configuracion_bp.route("/empresas/<int:empresa_id>/conciliaciones/reconciliar", methods=["POST"])
+@login_required
+@empresa_requerida
+def conciliaciones_reconciliar(empresa_id):
+    res = cfdi_repo.conciliar_existentes(empresa_id)
+    nuevos = len(res.get("conciliados", []))
+    flash(f"Conciliación ejecutada: {nuevos} movimiento(s) asociado(s) con sus facturas CFDI.", "exito")
+    return redirect(url_for("configuracion.conciliaciones", empresa_id=empresa_id))
 
 @configuracion_bp.route("/empresas/<int:empresa_id>/conciliaciones/<grupo_id>/confirmar", methods=["POST"])
 @login_required
 @empresa_requerida
 def conciliacion_confirmar(empresa_id, grupo_id):
-    cfdi_repo.confirmar_propuesta(grupo_id)
+    confirmada = cfdi_repo.confirmar_propuesta(grupo_id, empresa_id=empresa_id)
+    if not confirmada:
+        flash("Propuesta de conciliación no encontrada en esta empresa.", "error")
+        return redirect(url_for("configuracion.conciliaciones", empresa_id=empresa_id)), 404
     flash("Conciliación confirmada.", "exito")
     return redirect(url_for("configuracion.conciliaciones", empresa_id=empresa_id))
-
 
 @configuracion_bp.route("/empresas/<int:empresa_id>/conciliaciones/<grupo_id>/rechazar", methods=["POST"])
 @login_required
 @empresa_requerida
 def conciliacion_rechazar(empresa_id, grupo_id):
-    cfdi_repo.rechazar_propuesta(grupo_id)
+    rechazada = cfdi_repo.rechazar_propuesta(grupo_id, empresa_id=empresa_id)
+    if not rechazada:
+        flash("Propuesta de conciliación no encontrada en esta empresa.", "error")
+        return redirect(url_for("configuracion.conciliaciones", empresa_id=empresa_id)), 404
     flash("Propuesta descartada.", "exito")
     return redirect(url_for("configuracion.conciliaciones", empresa_id=empresa_id))
-
 
 # --- Usuarios (multiusuario real) ---
 
@@ -265,13 +300,18 @@ def conciliacion_rechazar(empresa_id, grupo_id):
 @login_required
 @empresa_requerida
 def usuarios(empresa_id):
-    if g.rol_empresa != "admin":
+    if g.rol_empresa not in ("admin", "superadmin"):
         flash("Solo un administrador de esta empresa puede gestionar usuarios.", "error")
         return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
 
     if request.method == "POST":
         nombre_usuario = request.form["usuario"].strip().lower()
-        rol = request.form.get("rol", "editor")
+        rol_raw = request.form.get("rol", "editor")
+        es_valido, resultado_rol = validar_rol_empresa_asignable(rol_raw)
+        if not es_valido:
+            flash(resultado_rol, "error")
+            return redirect(url_for("configuracion.usuarios", empresa_id=empresa_id)), 400
+        rol = resultado_rol
         organizacion_id = usuarios_repo.obtener_organizacion_de_empresa(empresa_id)
 
         if not nombre_usuario:
@@ -304,37 +344,19 @@ def usuarios(empresa_id):
     lista = usuarios_repo.listar_usuarios_de_empresa(empresa_id)
     return render_template("usuarios.html", lista=lista)
 
-
 @configuracion_bp.route("/empresas/<int:empresa_id>/usuarios/<int:usuario_id>/quitar", methods=["POST"])
 @login_required
 @empresa_requerida
 def usuario_quitar(empresa_id, usuario_id):
-    if g.rol_empresa != "admin":
+    if g.rol_empresa not in ("admin", "superadmin"):
         flash("Solo un administrador puede quitar usuarios.", "error")
         return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
     if usuario_id == g.usuario["id"]:
         flash("No puedes quitarte a ti mismo de la empresa.", "error")
         return redirect(url_for("configuracion.usuarios", empresa_id=empresa_id))
-    usuarios_repo.quitar_de_empresa(usuario_id, empresa_id)
+    quitado = usuarios_repo.quitar_de_empresa(usuario_id, empresa_id)
+    if not quitado:
+        flash("El usuario no estaba asignado a esta empresa.", "error")
+        return redirect(url_for("configuracion.usuarios", empresa_id=empresa_id)), 404
     flash("Usuario quitado de esta empresa.", "exito")
     return redirect(url_for("configuracion.usuarios", empresa_id=empresa_id))
-
-
-if __name__ == "__main__":
-    try:
-        inicializar_db()
-    except ErrorConexionBD as e:
-        print("\nNo se pudo iniciar Orange Poliza Engine.\n")
-        print(str(e))
-        print()
-        sys.exit(1)
-    # 0.0.0.0 para que sea accesible desde otras computadoras de la red
-    # o a través de un exponedor de puertos (ngrok, cloudflared, etc.),
-    # no solo desde esta misma máquina.
-    puerto = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=puerto, debug=False)
-
-
-
-
-

@@ -26,14 +26,13 @@ from db import get_connection
 
 UMBRAL_AUTOCONFIRMAR = 95  # solo 'exacto' (100) se aplica solo; el resto se revisa
 
-
 def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, tipo_hint=None):
     """
     :param tipo_hint: 'emitido' | 'recibido' | None. Si el usuario ya
-        indicÃ³ desde quÃ© botÃ³n subiÃ³ el archivo (Emitidos/Recibidos),
-        se usa directo en vez de adivinar por el RFC de la empresa â€”
-        mÃ¡s confiable si el RFC de la empresa no estÃ¡ bien capturado en
-        ConfiguraciÃ³n todavÃ­a.
+        indicó desde qué botón subió el archivo (Emitidos/Recibidos),
+        se usa directo en vez de adivinar por el RFC de la empresa —
+        más confiable si el RFC de la empresa no está bien capturado en
+        Configuración todavía.
     """
     con = get_connection()
     cur = con.cursor()
@@ -52,7 +51,8 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
             "SELECT id FROM cfdis WHERE empresa_id = ? AND uuid = ?", (empresa_id, cfdi.uuid)
         ).fetchone()
         if existe:
-            errores.append({"archivo": os.path.basename(ruta), "error": "CFDI ya importado (UUID duplicado)."})
+            if tipo_hint in ("emitido", "recibido"):
+                cur.execute("UPDATE cfdis SET tipo = ? WHERE id = ?", (tipo_hint, existe["id"]))
             continue
 
         if tipo_hint in ("emitido", "recibido"):
@@ -80,10 +80,10 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
                 (cfdi_id, imp.base, imp.importe, imp.tasa),
             )
         # Las retenciones del CFDI (<Retenciones>) no traen Base ni
-        # TasaOCuota en el XML â€” se usa el SubTotal del comprobante como
-        # base (asÃ­ viene en pÃ³lizas reales con retenciones) y se
+        # TasaOCuota en el XML — se usa el SubTotal del comprobante como
+        # base (así viene en pólizas reales con retenciones) y se
         # calcula la tasa a partir de eso, para poder llenar F4 igual
-        # que una lÃ­nea de traslado.
+        # que una línea de traslado.
         catalogo_impuesto_sat = {"001": "ISR", "002": "IVA", "003": "IEPS"}
         for ret in cfdi.impuestos_retenidos:
             tipo = catalogo_impuesto_sat.get(ret.impuesto, "IVA")
@@ -98,14 +98,14 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
     con.commit()
 
     # -----------------------------------------------------------------
-    # Conciliar TODOS los CFDI de la empresa que aÃºn no tienen ninguna
-    # fila en cfdi_movimiento contra TODOS los movimientos que aÃºn no
-    # estÃ¡n conciliados. AsÃ­, si subes CFDIs antes o despuÃ©s del Excel,
+    # Conciliar TODOS los CFDI de la empresa que aún no tienen ninguna
+    # fila en cfdi_movimiento contra TODOS los movimientos que aún no
+    # están conciliados. Así, si subes CFDIs antes o después del Excel,
     # igual se cruzan.
     # -----------------------------------------------------------------
     cfdis_db = cur.execute(
         """SELECT c.* FROM cfdis c
-           WHERE c.empresa_id = ? AND c.id NOT IN (SELECT cfdi_id FROM cfdi_movimiento)""",
+           WHERE c.empresa_id = ?""",
         (empresa_id,),
     ).fetchall()
 
@@ -123,8 +123,8 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
         ).fetchall()
         from cfdi_importer import CFDI, ImpuestoTraslado
         obj = CFDI(
-            uuid=fila["uuid"], rfc_emisor=fila["rfc_emisor"], nombre_emisor="",
-            rfc_receptor=fila["rfc_receptor"], nombre_receptor="",
+            uuid=fila["uuid"], rfc_emisor=fila["rfc_emisor"], nombre_emisor=fila.get("nombre_emisor") or "",
+            rfc_receptor=fila["rfc_receptor"], nombre_receptor=fila.get("nombre_receptor") or "",
             fecha=datetime.strptime(fila["fecha"], "%Y-%m-%d"), total=fila["total"],
             subtotal=fila["subtotal"], serie=fila["serie"], folio=fila["folio"],
             tipo_comprobante="I",
@@ -198,65 +198,96 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
         "pendientes_revision": pendientes_revision,
     }
 
-
 def listar_propuestas_pendientes(empresa_id):
-    con = get_connection()
-    filas = con.execute(
-        """SELECT cm.grupo_id, cm.tipo_match, cm.confianza, cm.motivo,
-                  STRING_AGG(DISTINCT c.serie || c.folio, ', ') AS folios,
-                  STRING_AGG(DISTINCT m.descripcion, ', ') AS descripciones,
-                  SUM(cm.importe_aplicado) AS total_aplicado,
-                  COUNT(DISTINCT cm.cfdi_id) AS num_cfdis,
-                  COUNT(DISTINCT cm.movimiento_id) AS num_movimientos
-           FROM cfdi_movimiento cm
-           JOIN cfdis c ON c.id = cm.cfdi_id
-           JOIN movimientos m ON m.id = cm.movimiento_id
-           WHERE m.empresa_id = ? AND cm.confirmado = 0
-           GROUP BY cm.grupo_id, cm.tipo_match, cm.confianza, cm.motivo
-           ORDER BY cm.confianza DESC""",
-        (empresa_id,),
-    ).fetchall()
-    con.close()
-    return filas
+    with get_connection() as con:
+        filas = con.execute(
+            """SELECT cm.grupo_id, cm.tipo_match, cm.confianza, cm.motivo,
+                      STRING_AGG(DISTINCT c.serie || c.folio, ', ') AS folios,
+                      STRING_AGG(DISTINCT m.descripcion, ', ') AS descripciones,
+                      SUM(cm.importe_aplicado) AS total_aplicado,
+                      COUNT(DISTINCT cm.cfdi_id) AS num_cfdis,
+                      COUNT(DISTINCT cm.movimiento_id) AS num_movimientos
+               FROM cfdi_movimiento cm
+               JOIN cfdis c ON c.id = cm.cfdi_id
+               JOIN movimientos m ON m.id = cm.movimiento_id
+               WHERE m.empresa_id = ? AND cm.confirmado = 0
+               GROUP BY cm.grupo_id, cm.tipo_match, cm.confianza, cm.motivo
+               ORDER BY cm.confianza DESC""",
+            (empresa_id,),
+        ).fetchall()
+        return filas
 
+def confirmar_propuesta(grupo_id, empresa_id=None) -> bool:
+    with get_connection() as con:
+        cur = con.cursor()
+        if empresa_id is not None:
+            filas = cur.execute(
+                """SELECT cm.*, c.serie, c.folio, c.uuid, c.rfc_emisor, c.rfc_receptor
+                   FROM cfdi_movimiento cm
+                   JOIN cfdis c ON c.id = cm.cfdi_id
+                   WHERE cm.grupo_id = ? AND c.empresa_id = ?""",
+                (grupo_id, empresa_id),
+            ).fetchall()
+        else:
+            filas = cur.execute(
+                """SELECT cm.*, c.serie, c.folio, c.uuid, c.rfc_emisor, c.rfc_receptor
+                   FROM cfdi_movimiento cm
+                   JOIN cfdis c ON c.id = cm.cfdi_id WHERE cm.grupo_id = ?""",
+                (grupo_id,),
+            ).fetchall()
 
-def confirmar_propuesta(grupo_id):
-    con = get_connection()
-    cur = con.cursor()
-    filas = cur.execute(
-        """SELECT cm.*, c.serie, c.folio, c.uuid, c.rfc_emisor, c.rfc_receptor
-           FROM cfdi_movimiento cm
-           JOIN cfdis c ON c.id = cm.cfdi_id WHERE cm.grupo_id = ?""",
-        (grupo_id,),
-    ).fetchall()
+        if not filas:
+            return False
 
-    for fila in filas:
-        cur.execute("UPDATE cfdi_movimiento SET confirmado = 1 WHERE id = ?", (fila["id"],))
-        folio = f"{fila['serie'] or ''}{fila['folio'] or ''}".strip() or fila["uuid"][:8]
-        mov_actual = cur.execute(
-            "SELECT numero_factura, rfc_contraparte FROM movimientos WHERE id = ?", (fila["movimiento_id"],)
-        ).fetchone()
-        factura_actual = (mov_actual["numero_factura"] or "").strip()
-        nuevo_valor = f"{factura_actual}+{folio}" if factura_actual and folio not in factura_actual else (folio if not factura_actual else factura_actual)
-        cur.execute(
-            "UPDATE movimientos SET numero_factura = ? WHERE id = ?",
-            (nuevo_valor, fila["movimiento_id"]),
-        )
-        if not (mov_actual["rfc_contraparte"] or "").strip():
-            # No sabemos con certeza si nosotros somos emisor o receptor
-            # aquÃ­ (podrÃ­a ser cualquiera); dejamos que rfc_contraparte
-            # se complete solo cuando el tipo de match ya lo determinÃ³
-            # (esto se resuelve mejor en el flujo de auto-confirmaciÃ³n;
-            # aquÃ­ solo evitamos sobreescribir con un valor incorrecto).
-            pass
+        for fila in filas:
+            cur.execute("UPDATE cfdi_movimiento SET confirmado = 1 WHERE id = ?", (fila["id"],))
+            folio = f"{fila['serie'] or ''}{fila['folio'] or ''}".strip() or fila["uuid"][:8]
+            mov_actual = cur.execute(
+                "SELECT numero_factura, rfc_contraparte FROM movimientos WHERE id = ?", (fila["movimiento_id"],)
+            ).fetchone()
+            factura_actual = (mov_actual["numero_factura"] or "").strip()
+            nuevo_valor = f"{factura_actual}+{folio}" if factura_actual and folio not in factura_actual else (folio if not factura_actual else factura_actual)
+            cur.execute(
+                "UPDATE movimientos SET numero_factura = ? WHERE id = ?",
+                (nuevo_valor, fila["movimiento_id"]),
+            )
 
-    con.commit()
-    con.close()
+        con.commit()
+        return True
 
+def rechazar_propuesta(grupo_id, empresa_id=None) -> bool:
+    with get_connection() as con:
+        if empresa_id is not None:
+            cur = con.execute(
+                """DELETE FROM cfdi_movimiento
+                   WHERE grupo_id = ?
+                     AND cfdi_id IN (SELECT id FROM cfdis WHERE empresa_id = ?)""",
+                (grupo_id, empresa_id),
+            )
+        else:
+            cur = con.execute("DELETE FROM cfdi_movimiento WHERE grupo_id = ?", (grupo_id,))
+        con.commit()
+        return cur.rowcount > 0
 
-def rechazar_propuesta(grupo_id):
-    con = get_connection()
-    con.execute("DELETE FROM cfdi_movimiento WHERE grupo_id = ?", (grupo_id,))
-    con.commit()
-    con.close()
+def conciliar_existentes(empresa_id):
+    with get_connection() as con:
+        empresa = con.execute("SELECT rfc FROM empresas WHERE id = ?", (empresa_id,)).fetchone()
+    rfc_empresa = (empresa["rfc"] if empresa else "") or ""
+    return importar_y_conciliar(empresa_id, [], rfc_empresa)
+
+def listar_conciliaciones_confirmadas(empresa_id):
+    with get_connection() as con:
+        filas = con.execute(
+            """SELECT cm.id, cm.grupo_id, cm.tipo_match, cm.confianza, cm.motivo, cm.importe_aplicado,
+                      c.uuid, c.serie, c.folio, c.total AS cfdi_total, c.rfc_emisor, c.rfc_receptor,
+                      m.id AS movimiento_id, m.fecha AS mov_fecha, m.tipo AS mov_tipo,
+                      m.descripcion AS mov_descripcion, m.total AS mov_total, m.numero_factura
+               FROM cfdi_movimiento cm
+               JOIN cfdis c ON c.id = cm.cfdi_id
+               JOIN movimientos m ON m.id = cm.movimiento_id
+               WHERE m.empresa_id = ? AND cm.confirmado = 1
+               ORDER BY m.fecha DESC, m.id ASC""",
+            (empresa_id,),
+        ).fetchall()
+        return filas
 

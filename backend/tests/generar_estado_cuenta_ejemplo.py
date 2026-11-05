@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -19,7 +19,6 @@ probar el pipeline completo de punta a punta."""
 from datetime import datetime, timedelta
 from openpyxl import Workbook
 
-
 def generar_estado_cuenta_ejemplo(ruta_salida: str):
     wb = Workbook()
     ws = wb.active
@@ -30,7 +29,7 @@ def generar_estado_cuenta_ejemplo(ruta_salida: str):
     base = datetime(2026, 8, 1)
     # (dias, concepto, referencia_banco, rfc, numero_factura, ingreso, egreso)
     # numero_factura = "" cuando el movimiento no trae factura (OXXO, comisiones,
-    # Netflix, Uber): asÃ­ se ve reflejado tambiÃ©n en la pÃ³liza exportada.
+    # Netflix, Uber): así se ve reflejado también en la póliza exportada.
     filas = [
         (0, "COMPRA OXXO 4821 SUC 332", "REF001", None, "", None, 348.00),
         (0, "COMPRA OXXO 7733 SUC 118", "REF002", None, "", None, 162.00),
@@ -52,7 +51,6 @@ def generar_estado_cuenta_ejemplo(ruta_salida: str):
 
     wb.save(ruta_salida)
     return ruta_salida
-
 
 if __name__ == "__main__":
     generar_estado_cuenta_ejemplo("/home/claude/orange-poliza-engine/backend/tests/estado_cuenta_ejemplo.xlsx")
