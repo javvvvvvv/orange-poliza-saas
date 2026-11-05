@@ -160,11 +160,19 @@ def _construir_info_descuadre(mov, nombre_regla, resultado):
 
 def clasificar_pendientes(empresa_id):
     """Corre el motor de reglas sobre los movimientos pendientes de la
-    empresa y actualiza su estado usando una única conexión al pool."""
+    empresa y actualiza su estado usando una única conexión al pool.
+    
+    Criterio Contable Seguro:
+    - Certeza contable (RFC exacto, cuenta bancaria exacta, descripción exacta
+      o palabra clave específica con confianza >= 90%): pasa a 'automatico'.
+    - Coincidencia difusa o palabra clave corta (< 90%): pasa a 'sugerido'
+      para revisión y autorización explícita del contador sin generar póliza en falso.
+    """
     repo = RepositorioReglas()
     reglas, plantillas = repo.cargar_para_motor(empresa_id)
 
     automaticos = 0
+    sugeridos = 0
     usos_por_regla = {}
     descuadres = []
 
@@ -183,7 +191,7 @@ def clasificar_pendientes(empresa_id):
             tasa_ret_isr = MontoDecimal("0.0")
 
         pendientes = con.execute(
-            "SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion = 'pendiente'",
+            "SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion IN ('pendiente', 'sugerido')",
             (empresa_id,),
         ).fetchall()
 
@@ -225,15 +233,31 @@ def clasificar_pendientes(empresa_id):
                 descuadres.append(_construir_info_descuadre(mov, match.regla.nombre, resultado))
                 continue
 
-            con.execute(
-                """UPDATE movimientos
-                   SET regla_id = ?, confianza_clasificacion = ?, estado_clasificacion = 'automatico'
-                   WHERE id = ?""",
-                (match.regla.id, match.confianza, fila["id"]),
-            )
-            usos_por_regla[match.regla.id] = usos_por_regla.get(match.regla.id, 0) + 1
-            automaticos += 1
-            registrar_memoria_ml_exitosa(empresa_id, mov["descripcion"], mov["tipo"], match.regla.id, con=con)
+            # Determinación de certeza contable
+            es_certeza = False
+            if match.nivel in ("rfc", "cuenta_bancaria", "exacta"):
+                es_certeza = True
+            elif match.nivel == "contiene" and match.confianza >= 90:
+                es_certeza = True
+
+            if es_certeza:
+                con.execute(
+                    """UPDATE movimientos
+                       SET regla_id = ?, confianza_clasificacion = ?, estado_clasificacion = 'automatico'
+                       WHERE id = ?""",
+                    (match.regla.id, match.confianza, fila["id"]),
+                )
+                usos_por_regla[match.regla.id] = usos_por_regla.get(match.regla.id, 0) + 1
+                automaticos += 1
+                registrar_memoria_ml_exitosa(empresa_id, mov["descripcion"], mov["tipo"], match.regla.id, con=con)
+            else:
+                con.execute(
+                    """UPDATE movimientos
+                       SET regla_id = ?, confianza_clasificacion = ?, estado_clasificacion = 'sugerido'
+                       WHERE id = ?""",
+                    (match.regla.id, match.confianza, fila["id"]),
+                )
+                sugeridos += 1
 
         for regla_id, veces in usos_por_regla.items():
             con.execute(
@@ -243,7 +267,8 @@ def clasificar_pendientes(empresa_id):
 
     return {
         "automaticos": automaticos,
-        "pendientes_restantes": len(pendientes) - automaticos,
+        "sugeridos": sugeridos,
+        "pendientes_restantes": len(pendientes) - automaticos - sugeridos,
         "descuadres": descuadres,
     }
 

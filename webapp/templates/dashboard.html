@@ -134,9 +134,11 @@ document.addEventListener("DOMContentLoaded", function() {
       <tr class="border-b border-slate-100 last:border-0">
         <td class="px-5 py-3 w-6">
           {% if m.estado_clasificacion == 'automatico' %}
-            <span class="text-emerald-600">✓</span>
+            <span class="text-emerald-600" title="Automático">✓</span>
+          {% elif m.estado_clasificacion == 'sugerido' %}
+            <span class="text-sky-600 font-bold" title="Sugerido (Requiere validación)">💡</span>
           {% elif m.estado_clasificacion == 'pendiente' %}
-            <span class="text-amber-500">⚠</span>
+            <span class="text-amber-500" title="Pendiente">⚠</span>
           {% else %}
             <span class="text-slate-400">•</span>
           {% endif %}

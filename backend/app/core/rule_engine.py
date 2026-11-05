@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ml_engine import PredictorML
-from fuzzy_matcher import similitud_combinada, confianza_desde_similitud
+from fuzzy_matcher import similitud_combinada, confianza_desde_similitud, BANK_STOPWORDS
 
 _DIR = os.path.dirname(__file__)
 _LLAVE = b"OC-9k-reglas-2026"
@@ -40,7 +40,7 @@ def _cargar_mapa() -> dict:
     return json.loads(raw)["re"]
 
 _CFG = _cargar_mapa()
-UMBRAL_DIFUSO = _CFG["um"]
+UMBRAL_DIFUSO = max(_CFG["um"], 0.80)
 
 def normalizar_texto(texto: str) -> str:
     if not texto:
@@ -143,9 +143,19 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
             continue
         for palabra_clave in regla.descripcion_contiene:
             palabra_norm = normalizar_texto(palabra_clave)
-            if palabra_norm and palabra_norm in descripcion_norm:
-                base, tope = _CFG["cf"]
-                confianza = min(tope, base + len(palabra_norm))
+            if not palabra_norm or len(palabra_norm) < 3:
+                continue
+            if palabra_norm in BANK_STOPWORDS:
+                continue
+            # Coincidencia con límites de palabra para evitar subcadenas falsas (ej. 'SOL' en 'RESOLUCION')
+            patron = rf"\b{re.escape(palabra_norm)}\b"
+            if re.search(patron, descripcion_norm):
+                # Palabras clave largas o compuestas (>= 8 letras o frases) tienen mayor especificidad
+                if len(palabra_norm) >= 8 or " " in palabra_norm:
+                    confianza = 95
+                else:
+                    confianza = min(90, 75 + len(palabra_norm) * 2)
+
                 if confianza > mejor_confianza:
                     mejor_confianza = confianza
                     mejor_match = MatchResult(
@@ -166,7 +176,9 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
         if regla.tipo_movimiento and regla.tipo_movimiento != tipo_mov:
             continue
         for palabra_clave in regla.descripcion_contiene:
-            candidatos.append((normalizar_texto(palabra_clave), regla))
+            palabra_norm = normalizar_texto(palabra_clave)
+            if palabra_norm and len(palabra_norm) >= 3 and palabra_norm not in BANK_STOPWORDS:
+                candidatos.append((palabra_norm, regla))
 
     if candidatos:
         mejor_score = -1.0

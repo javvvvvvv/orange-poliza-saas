@@ -79,6 +79,26 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div>
       
+  {% if regla_sugerida %}
+  <div class="mb-5 bg-sky-50 border border-sky-200 rounded-lg p-4 shadow-sm flex items-center justify-between">
+    <div>
+      <div class="flex items-center gap-2 text-sky-800 text-sm font-semibold">
+        <svg class="w-4 h-4 text-sky-600" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zM9 11a1 1 0 112 0v2a1 1 0 11-2 0v-2zm1-4a1 1 0 110 2 1 1 0 010-2z"></path></svg>
+        Sugerencia del Motor (Confianza: {{ movimiento.confianza_clasificacion }}%)
+      </div>
+      <div class="text-xs text-sky-700 mt-1">
+        Coincidencia detectada con la regla: <strong>{{ regla_sugerida.nombre }}</strong>
+      </div>
+    </div>
+    <form method="post" action="/empresas/{{ request.view_args.empresa_id }}/pendientes/{{ movimiento.id }}/confirmar-sugerencia">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm transition-colors">
+        ✓ Autorizar Sugerencia
+      </button>
+    </form>
+  </div>
+  {% endif %}
+
   {% if sugerencia_ai %}
   <div class="mb-4 bg-orange-50 border border-orange-200 rounded-lg p-3 shadow-sm">
     <div class="flex items-center gap-2 text-orange-800 text-sm font-semibold mb-1">
@@ -120,6 +140,26 @@
 
     <div>
       
+  {% if regla_sugerida %}
+  <div class="mb-5 bg-sky-50 border border-sky-200 rounded-lg p-4 shadow-sm flex items-center justify-between">
+    <div>
+      <div class="flex items-center gap-2 text-sky-800 text-sm font-semibold">
+        <svg class="w-4 h-4 text-sky-600" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zM9 11a1 1 0 112 0v2a1 1 0 11-2 0v-2zm1-4a1 1 0 110 2 1 1 0 010-2z"></path></svg>
+        Sugerencia del Motor (Confianza: {{ movimiento.confianza_clasificacion }}%)
+      </div>
+      <div class="text-xs text-sky-700 mt-1">
+        Coincidencia detectada con la regla: <strong>{{ regla_sugerida.nombre }}</strong>
+      </div>
+    </div>
+    <form method="post" action="/empresas/{{ request.view_args.empresa_id }}/pendientes/{{ movimiento.id }}/confirmar-sugerencia">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm transition-colors">
+        ✓ Autorizar Sugerencia
+      </button>
+    </form>
+  </div>
+  {% endif %}
+
   {% if sugerencia_ai %}
   <div class="mb-4 bg-orange-50 border border-orange-200 rounded-lg p-3 shadow-sm">
     <div class="flex items-center gap-2 text-orange-800 text-sm font-semibold mb-1">

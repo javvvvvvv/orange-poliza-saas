@@ -33,7 +33,41 @@ def _cargar_mapa() -> dict:
     return json.loads(raw)["fz"]
 
 _CFG = _cargar_mapa()
-STOPWORDS = set(_CFG["sw"])
+
+BANK_STOPWORDS = {
+    # Operaciones y conceptos bancarios comunes
+    "SPEI", "TEF", "PAGO", "PAGOS", "TRANSFERENCIA", "TRANSFERENCIAS", "TRANSF",
+    "TRASPASO", "TRASPASOS", "DEPOSITO", "DEPOSITOS", "RETIRO", "RETIROS",
+    "CARGO", "CARGOS", "ABONO", "ABONOS", "CHEQUE", "CHEQUES", "CHQ",
+    "COMPRA", "COMPRAS", "VENTA", "VENTAS", "DISPOSICION", "PAGARE",
+    "LIQUIDACION", "OPERACION", "MOVIMIENTO", "TRANSACCION", "ENVIO", "ENVIADO",
+    "RECIBO", "RECIBOS", "RECIBIDO", "RECEPCION",
+
+    # Términos contables y fiscales genéricos
+    "IVA", "ISR", "IEPS", "RETENCION", "RETENCIONES", "IMPUESTO", "IMPUESTOS",
+    "FACTURA", "FACTURAS", "FAC", "FOLIO", "UUID", "CFDI", "RFC",
+    "SUBTOTAL", "TOTAL", "IMPORTE", "MONTO", "SALDO",
+
+    # Canales e infraestructura bancaria
+    "SUCURSAL", "SUC", "VENTANILLA", "CAJERO", "ATM", "BANCA", "NET",
+    "ELECTRONICA", "ELECTRONICO", "PORTAL", "MOVIL", "APP", "LINEA",
+    "INTERBANCARIO", "INTERBANCARIA", "NACIONAL", "EXTRANJERO",
+
+    # Conceptos generales de empresa y nómina
+    "NOMINA", "SUELDO", "SUELDOS", "HONORARIOS", "ANTICIPO", "ANTICIPOS",
+    "FINIQUITO", "GASTO", "GASTOS", "VIATICOS", "SERVICIOS", "SERVICIO",
+    "COMISION", "COMISIONES", "INTERES", "INTERESES", "SEGURO", "SEGUROS",
+    "MENSUALIDAD", "CUOTA", "PENSION", "ARRENDAMIENTO", "RENTA",
+    "EFECTIVO", "TERMINAL", "TPV", "POS", "CUENTA", "CTA", "CLABE",
+    "TERCERO", "TERCEROS", "GUIA", "REF", "REFERENCIA", "NUM", "NUMERO",
+
+    # Stopwords gramaticales y societarias
+    "DE", "DEL", "LA", "LAS", "EL", "LOS", "EN", "POR", "PARA", "CON", "SIN",
+    "Y", "O", "A", "AL", "UN", "UNA", "UNOS", "UNAS", "QUE",
+    "SA", "CV", "SAPI", "SC", "AC", "SRL", "MI", "SNC", "DE CV", "SA DE CV"
+}
+
+STOPWORDS = set(_CFG["sw"]) | BANK_STOPWORDS
 
 def _tokens(texto: str) -> set:
     return set(t for t in texto.split() if len(t) >= 3 and t not in STOPWORDS)
@@ -82,7 +116,7 @@ def similitud_combinada(descripcion: str, palabra_clave: str) -> float:
     tokens_clave = list(_tokens(palabra_clave))
 
     if not tokens_clave or not tokens_desc:
-        return similitud_caracteres(descripcion, palabra_clave)
+        return 0.0
 
     scores = [_mejor_score_para_token(t, tokens_desc) for t in tokens_clave]
     

@@ -26,6 +26,7 @@ from rules_repository import RepositorioReglas
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "app", "core")))
 from formula_engine import validar_formula
+from rule_engine import normalizar_texto, BANK_STOPWORDS
 import orange_intelligence
 
 def _int_seguro(valor, default=100) -> int:
@@ -164,13 +165,13 @@ def pendientes_siguiente(empresa_id):
     omitidos = [int(x) for x in session.get("pendientes_omitidos", []) if str(x).isdigit()]
     with get_connection() as con:
         movimiento = con.execute(
-            f"""SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion = 'pendiente'
+            f"""SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion IN ('pendiente', 'sugerido')
                 {"AND id NOT IN (" + ",".join("?" * len(omitidos)) + ")" if omitidos else ""}
                 ORDER BY id ASC LIMIT 1""",
             (empresa_id, *omitidos),
         ).fetchone()
         total_pendientes = con.execute(
-            "SELECT COUNT(*) FROM movimientos WHERE empresa_id = ? AND estado_clasificacion = 'pendiente'",
+            "SELECT COUNT(*) FROM movimientos WHERE empresa_id = ? AND estado_clasificacion IN ('pendiente', 'sugerido')",
             (empresa_id,),
         ).fetchone()[0]
 
@@ -189,6 +190,12 @@ def pendientes_siguiente(empresa_id):
             (movimiento["documento_id"], empresa_id),
         ).fetchone()
 
+        regla_sugerida = None
+        if movimiento["regla_id"]:
+            regla_sugerida = con.execute(
+                "SELECT id, nombre FROM reglas WHERE id = ?", (movimiento["regla_id"],)
+            ).fetchone()
+
         # Si ya hay un CFDI confirmado para este movimiento, el sistema ya
         # conoce el RFC y los impuestos exactos: no hace falta preguntar
         # IVA ni afectable, solo la cuenta contable del cliente/proveedor.
@@ -206,9 +213,34 @@ def pendientes_siguiente(empresa_id):
     return render_template(
         "pendientes_siguiente.html", movimiento=movimiento, sugerencia=sugerencia,
         cuentas=cuentas, empresa=empresa, banco=banco, cfdi_info=cfdi_info,
+        regla_sugerida=regla_sugerida,
         total_pendientes=total_pendientes,
         restantes=total_pendientes - len(omitidos),
     )
+
+@reglas_bp.route("/empresas/<int:empresa_id>/pendientes/<int:movimiento_id>/confirmar-sugerencia", methods=["POST"])
+@login_required
+@empresa_requerida
+def pendiente_confirmar_sugerencia(empresa_id, movimiento_id):
+    with get_connection() as con:
+        mov = con.execute(
+            "SELECT * FROM movimientos WHERE id = ? AND empresa_id = ?",
+            (movimiento_id, empresa_id),
+        ).fetchone()
+        if not mov or not mov["regla_id"]:
+            flash("Movimiento o regla sugerida no encontrada.", "error")
+            return redirect(url_for("reglas.pendientes_siguiente", empresa_id=empresa_id))
+
+        con.execute(
+            "UPDATE movimientos SET estado_clasificacion = 'manual' WHERE id = ? AND empresa_id = ?",
+            (movimiento_id, empresa_id),
+        )
+        con.execute(
+            "UPDATE reglas SET veces_aplicada = veces_aplicada + 1 WHERE id = ?",
+            (mov["regla_id"],),
+        )
+    flash("Sugerencia autorizada exitosamente.", "exito")
+    return redirect(url_for("reglas.pendientes_siguiente", empresa_id=empresa_id))
 
 @reglas_bp.route("/empresas/<int:empresa_id>/pendientes/<int:movimiento_id>/omitir", methods=["POST"])
 @login_required
@@ -326,7 +358,7 @@ def pendientes(empresa_id):
         empresa = con.execute("SELECT rfc FROM empresas WHERE id = ?", (empresa_id,)).fetchone()
         rfc_empresa = empresa["rfc"] if empresa else ""
         filas = con.execute(
-            "SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion = 'pendiente' ORDER BY fecha ASC",
+            "SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion IN ('pendiente', 'sugerido') ORDER BY fecha ASC",
             (empresa_id,),
         ).fetchall()
         
@@ -386,7 +418,17 @@ def pendiente_crear_regla(empresa_id, movimiento_id):
         kwargs["rfc_contraparte"] = valor_coincidencia
     elif tipo_coincidencia == "cuenta_bancaria":
         kwargs["cuenta_bancaria_contraparte"] = valor_coincidencia
+    elif tipo_coincidencia == "exacta":
+        kwargs["descripcion_exacta"] = valor_coincidencia
     else:
+        norm_val = normalizar_texto(valor_coincidencia)
+        if norm_val in BANK_STOPWORDS or len(norm_val) < 4:
+            flash(
+                f"La palabra clave '{valor_coincidencia}' es un término bancario genérico o demasiado corto. "
+                f"Usa un nombre específico del proveedor, su RFC o coincidencia exacta para no desviar otros movimientos contables.",
+                "error",
+            )
+            return redirect(url_for("reglas.pendientes", empresa_id=empresa_id)), 400
         kwargs["palabras_clave"] = [valor_coincidencia]
 
     repo.crear_regla(**kwargs)

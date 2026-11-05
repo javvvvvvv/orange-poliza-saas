@@ -212,7 +212,7 @@ def dashboard(empresa_id):
             (empresa_id,),
         ).fetchone()[0]
         pendientes = con.execute(
-            "SELECT COUNT(*) FROM movimientos WHERE empresa_id = ? AND estado_clasificacion = 'pendiente'",
+            "SELECT COUNT(*) FROM movimientos WHERE empresa_id = ? AND estado_clasificacion IN ('pendiente', 'sugerido')",
             (empresa_id,),
         ).fetchone()[0]
         con_poliza = con.execute(
