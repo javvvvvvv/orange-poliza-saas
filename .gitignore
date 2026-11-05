@@ -29,6 +29,7 @@ scratch/
 dump_*.py
 test_*.ps1
 test_*.py
+!backend/tests/test_*.py
 test_*.txt
 *.txt
 !requirements.txt

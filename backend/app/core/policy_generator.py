@@ -108,6 +108,11 @@ def generar_poliza(
         tasa_ret_iva=tasa_ret_iva,
         tasa_ret_isr=tasa_ret_isr,
         iva_exacto=movimiento.get("iva_exacto"),
+        ieps=movimiento.get("ieps", Decimal("0.00")),
+        base_gravada=movimiento.get("base_gravada"),
+        base_exenta=movimiento.get("base_exenta", Decimal("0.00")),
+        base_0=movimiento.get("base_0", Decimal("0.00")),
+        descuento=movimiento.get("descuento", Decimal("0.00")),
     )
 
     resultado.explicacion.append(
@@ -136,6 +141,10 @@ def generar_poliza(
                 f"{linea_plantilla.cuenta} dio un importe negativo ({importe}). "
                 f"Revisa la fórmula."
             )
+            continue
+
+        if importe == Decimal("0.00"):
+            # Omitir líneas con importe cero (ej. retenciones opcionales que no aplican a esta factura)
             continue
 
         descripcion_linea = (

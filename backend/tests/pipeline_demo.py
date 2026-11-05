@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app", "core"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app", "importers"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app", "exporters"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app", "cfdi"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "webapp"))
 
 from generar_estado_cuenta_ejemplo import generar_estado_cuenta_ejemplo   # noqa: E402
 from generar_cfdis_ejemplo import generar_cfdis_ejemplo, RFC_EMPRESA      # noqa: E402

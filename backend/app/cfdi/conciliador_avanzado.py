@@ -85,18 +85,33 @@ def conciliar_avanzado(
         num_fact_limpio = re.sub(r'[^a-zA-Z0-9]', '', num_fact_raw).upper()
         if not num_fact_limpio:
             continue
+        rfc_mov = (mov.get("rfc_contraparte") or "").strip().upper()
+        if rfc_mov in {"ND", "N/A", "NA", "N.D.", "N.A.", "XAXX010101000", "XEXX010101000", "000000000000", "XXX"}:
+            rfc_mov = ""
+
         for cfdi in cfdis:
+            # Excluir comprobantes que no son facturas ni pagos (ej. Nómina 'N', Traslado 'T', Egreso 'E')
+            if getattr(cfdi, "tipo_comprobante", "I") not in ("I", "P"):
+                continue
+
             tipo = tipo_por_uuid.get(cfdi.uuid) or clasificar_cfdi(cfdi, rfc_empresa)
             if tipo != "desconocido":
                 tipo_mov_esperado = "ingreso" if tipo == "emitido" else "egreso"
                 if mov["tipo"] != tipo_mov_esperado:
                     continue
+
+            rfc_contraparte = cfdi.rfc_receptor if tipo == "emitido" else cfdi.rfc_emisor
+            # REGLA DURA: Si el movimiento trae RFC, no puede casarse con CFDI de otro RFC
+            if rfc_mov and rfc_mov != rfc_contraparte:
+                continue
+
             folio_limpio = re.sub(r'[^a-zA-Z0-9]', '', cfdi.folio or "").upper()
             serie_limpia = re.sub(r'[^a-zA-Z0-9]', '', cfdi.serie or "").upper()
             uuid_limpio = re.sub(r'[^a-zA-Z0-9]', '', cfdi.uuid or "").upper()
 
             coincide_folio = False
-            if folio_limpio and num_fact_limpio == folio_limpio:
+            # Exigir que el folio no sea ambiguo (mínimo 2 caracteres o coincidencia con serie)
+            if folio_limpio and len(folio_limpio) >= 2 and num_fact_limpio == folio_limpio:
                 coincide_folio = True
             elif (serie_limpia or folio_limpio) and num_fact_limpio == (serie_limpia + folio_limpio):
                 coincide_folio = True
@@ -119,6 +134,8 @@ def conciliar_avanzado(
     grupos = {}  # (tipo_mov_esperado, rfc_contraparte) -> {"cfdis": [...], "movs": [(idx, mov), ...]}
 
     for cfdi in cfdis:
+        if getattr(cfdi, "tipo_comprobante", "I") not in ("I", "P"):
+            continue
         tipo = tipo_por_uuid.get(cfdi.uuid) or clasificar_cfdi(cfdi, rfc_empresa)
         if tipo == "desconocido":
             continue
@@ -132,6 +149,8 @@ def conciliar_avanzado(
         if id(mov) in movs_conciliados_por_folio:
             continue
         rfc_mov = (mov.get("rfc_contraparte") or "").strip().upper()
+        if rfc_mov in {"ND", "N/A", "NA", "N.D.", "N.A.", "XAXX010101000", "XEXX010101000", "000000000000", "XXX"}:
+            rfc_mov = ""
         clave = (mov["tipo"], rfc_mov) if rfc_mov else None
         if clave and clave in grupos:
             grupos[clave]["movs"].append((i, mov))
@@ -146,20 +165,40 @@ def conciliar_avanzado(
         for cfdi in cfdis_grupo:
             if id(cfdi) in usados_cfdi:
                 continue
-            for idx, mov in movs_grupo:
-                if idx in usados_mov:
-                    continue
-                if (abs(mov["total"] - cfdi.total) <= tolerancia_monto
-                        and _dentro_de_ventana(cfdi.fecha, mov["fecha"], ventana_dias)):
-                    propuestas.append(PropuestaConciliacion(
-                        tipo_match="exacto", confianza=_CFG["cf"]["exacto"],
-                        motivo=f"RFC e importe coinciden exactamente (${cfdi.total:,.2f}).",
-                        cfdis=[cfdi], movimientos=[mov],
-                        aplicaciones=[AplicacionCFDI(cfdi, mov, cfdi.total)],
-                    ))
-                    usados_cfdi.add(id(cfdi))
-                    usados_mov.add(idx)
-                    break
+            # Verificar si hay múltiples candidatos del mismo monto para desambiguar
+            candidatos_exactos = [
+                (idx, mov) for idx, mov in movs_grupo
+                if idx not in usados_mov
+                and abs(mov["total"] - cfdi.total) <= tolerancia_monto
+                and _dentro_de_ventana(cfdi.fecha, mov["fecha"], ventana_dias)
+            ]
+            cfdis_mismo_monto = [
+                c for c in cfdis_grupo
+                if id(c) not in usados_cfdi
+                and abs(c.total - cfdi.total) <= tolerancia_monto
+            ]
+
+            if len(candidatos_exactos) == 1 and len(cfdis_mismo_monto) == 1:
+                idx, mov = candidatos_exactos[0]
+                propuestas.append(PropuestaConciliacion(
+                    tipo_match="exacto", confianza=_CFG["cf"]["exacto"],
+                    motivo=f"RFC e importe coinciden exactamente (${cfdi.total:,.2f}) como candidato único.",
+                    cfdis=[cfdi], movimientos=[mov],
+                    aplicaciones=[AplicacionCFDI(cfdi, mov, cfdi.total)],
+                ))
+                usados_cfdi.add(id(cfdi))
+                usados_mov.add(idx)
+            elif len(candidatos_exactos) >= 1:
+                # Caso ambiguo: múltiples facturas del mismo monto o múltiples pagos iguales
+                idx, mov = candidatos_exactos[0]
+                propuestas.append(PropuestaConciliacion(
+                    tipo_match="exacto", confianza=80,
+                    motivo=f"RFC e importe coinciden (${cfdi.total:,.2f}), pero existen {len(cfdis_mismo_monto)} facturas del mismo monto. Requiere verificación de folio.",
+                    cfdis=[cfdi], movimientos=[mov],
+                    aplicaciones=[AplicacionCFDI(cfdi, mov, cfdi.total)],
+                ))
+                usados_cfdi.add(id(cfdi))
+                usados_mov.add(idx)
 
         restantes_cfdi = [c for c in cfdis_grupo if id(c) not in usados_cfdi]
         for idx, mov in movs_grupo:
@@ -253,6 +292,14 @@ def conciliar_avanzado(
     cfdis_disponibles_global = [c for c in cfdis if id(c) not in cfdis_ya_usados_ids]
 
     for idx, mov in movs_sin_grupo:
+        rfc_mov = (mov.get("rfc_contraparte") or "").strip().upper()
+        if rfc_mov in {"ND", "N/A", "NA", "N.D.", "N.A.", "XAXX010101000", "XEXX010101000", "000000000000", "XXX"}:
+            rfc_mov = ""
+        # REGLA DURA: Si el movimiento trae su propio RFC del banco, JAMÁS asociar por monto a un CFDI de otro RFC
+        if rfc_mov:
+            continue
+
+        candidatos_monto = []
         for cfdi in cfdis_disponibles_global:
             if id(cfdi) in cfdis_ya_usados_ids:
                 continue
@@ -264,16 +311,28 @@ def conciliar_avanzado(
                 continue
             if (abs(mov["total"] - cfdi.total) <= tolerancia_monto
                     and _dentro_de_ventana(cfdi.fecha, mov["fecha"], ventana_dias)):
-                propuestas.append(PropuestaConciliacion(
-                    tipo_match="monto_sin_rfc", confianza=_CFG["cf"]["sin_rfc"],
-                    motivo=(f"El movimiento no trae RFC, pero el importe "
-                            f"(${cfdi.total:,.2f}) y la fecha coinciden exactamente "
-                            f"con la factura {cfdi.serie or ''}{cfdi.folio or ''}."),
-                    cfdis=[cfdi], movimientos=[mov],
-                    aplicaciones=[AplicacionCFDI(cfdi, mov, cfdi.total)],
-                ))
-                cfdis_ya_usados_ids.add(id(cfdi))
-                break
+                candidatos_monto.append(cfdi)
+
+        if len(candidatos_monto) == 1:
+            cfdi = candidatos_monto[0]
+            propuestas.append(PropuestaConciliacion(
+                tipo_match="monto_sin_rfc", confianza=_CFG["cf"]["sin_rfc"],
+                motivo=(f"El movimiento no trae RFC, pero el importe (${cfdi.total:,.2f}) "
+                        f"y la fecha coinciden exactamente con la factura {cfdi.serie or ''}{cfdi.folio or ''}."),
+                cfdis=[cfdi], movimientos=[mov],
+                aplicaciones=[AplicacionCFDI(cfdi, mov, cfdi.total)],
+            ))
+            cfdis_ya_usados_ids.add(id(cfdi))
+        elif len(candidatos_monto) > 1:
+            cfdi = candidatos_monto[0]
+            propuestas.append(PropuestaConciliacion(
+                tipo_match="monto_sin_rfc", confianza=50,
+                motivo=(f"Ambigüedad: existen {len(candidatos_monto)} facturas por ${mov['total']:,.2f} "
+                        f"sin RFC en el banco. Requiere asignación del contador."),
+                cfdis=[cfdi], movimientos=[mov],
+                aplicaciones=[AplicacionCFDI(cfdi, mov, cfdi.total)],
+            ))
+            cfdis_ya_usados_ids.add(id(cfdi))
 
     cfdi_saldos = {id(c): c.total for c in cfdis}
     for p in propuestas:
@@ -287,6 +346,9 @@ def conciliar_avanzado(
 
     import re
     for mov in movs_restantes:
+        rfc_mov = (mov.get("rfc_contraparte") or "").strip().upper()
+        if rfc_mov in {"ND", "N/A", "NA", "N.D.", "N.A.", "XAXX010101000", "XEXX010101000", "000000000000", "XXX"}:
+            rfc_mov = ""
         desc_limpia = re.sub(r'[^a-zA-Z0-9]', '', f"{mov.get('descripcion', '')}{mov.get('referencia', '')}{mov.get('numero_factura', '')}").upper()
         if not desc_limpia: continue
         
@@ -300,6 +362,11 @@ def conciliar_avanzado(
                 continue
             tipo_mov_esperado = "ingreso" if tipo == "emitido" else "egreso"
             if mov["tipo"] != tipo_mov_esperado:
+                continue
+
+            rfc_contraparte = cfdi.rfc_receptor if tipo == "emitido" else cfdi.rfc_emisor
+            # REGLA DURA: si trae RFC del banco, no puede asociarse a otro RFC
+            if rfc_mov and rfc_mov != rfc_contraparte:
                 continue
                 
             # 1. Busqueda por Serie + Folio
@@ -319,25 +386,35 @@ def conciliar_avanzado(
                     match_texto = True
                     motivo_texto = f"El estado de cuenta menciona el folio {cfdi.folio}."
 
-            # 2. Busqueda por Nombre del Cliente/Proveedor
+            # 2. Busqueda por Nombre del Cliente/Proveedor con filtro estricto anti-falsos positivos
             if not match_texto:
                 nombre = cfdi.nombre_receptor if tipo_mov_esperado == "ingreso" else cfdi.nombre_emisor
                 if nombre:
-                    # Usamos la primera palabra significativa del nombre (minimo 4 letras)
-                    partes_nombre = [p for p in re.sub(r'[^a-zA-Z0-9]', ' ', nombre).upper().split() if len(p) >= 4 and p not in ('COMPANIA', 'GRUPO', 'COMERCIAL', 'SERVICIOS', 'SISTEMAS', 'DE', 'CV', 'SA', 'SAPI', 'RL')]
-                    if partes_nombre:
-                        for parte in partes_nombre:
-                            if parte in desc_limpia:
-                                match_texto = True
-                                motivo_texto = f"El estado de cuenta menciona al tercero ({parte})."
-                                break
+                    stop_palabras_nombre = {
+                        'COMPANIA', 'GRUPO', 'COMERCIAL', 'SERVICIOS', 'SISTEMAS', 'DE', 'CV', 'SA', 'SAPI', 'RL',
+                        'MEXICO', 'NACIONAL', 'DISTRIBUIDORA', 'SOLUCIONES', 'CORPORATIVO', 'OPERADORA', 'ASOCIADOS',
+                        'LOGISTICA', 'CONSULTORES', 'ADMINISTRACION', 'CENTRO', 'INSTITUTO', 'UNION', 'INTEGRAL', 'MEXICANA'
+                    }
+                    partes_nombre = [
+                        p for p in re.sub(r'[^a-zA-Z0-9]', ' ', nombre).upper().split()
+                        if len(p) >= 4 and p not in stop_palabras_nombre
+                    ]
+                    if len(partes_nombre) >= 2:
+                        coincidencias = sum(1 for p in partes_nombre if p in desc_limpia)
+                        if coincidencias >= 2:
+                            match_texto = True
+                            motivo_texto = f"El estado de cuenta menciona el nombre del tercero ({' '.join(partes_nombre[:2])})."
+                    elif len(partes_nombre) == 1 and len(partes_nombre[0]) >= 6:
+                        if partes_nombre[0] in desc_limpia:
+                            match_texto = True
+                            motivo_texto = f"El estado de cuenta menciona al tercero ({partes_nombre[0]})."
 
             # Si hubo coincidencia de texto, validar montos logicos
             if match_texto and mov["total"] <= saldo_cfdi + 1.0:
                 importe_aplicar = min(mov["total"], saldo_cfdi)
                 propuestas.append(PropuestaConciliacion(
-                    tipo_match="texto_inteligente", confianza=_CFG["cf"].get("sin_rfc", 75) - 5,
-                    motivo=f"Inteligencia Logica: {motivo_texto} El importe del banco cabe en el saldo restante del CFDI.",
+                    tipo_match="texto_inteligente", confianza=65,
+                    motivo=f"Inteligencia Lógica: {motivo_texto} El importe del banco cabe en el saldo restante del CFDI.",
                     cfdis=[cfdi], movimientos=[mov],
                     aplicaciones=[AplicacionCFDI(cfdi, mov, importe_aplicar)],
                 ))

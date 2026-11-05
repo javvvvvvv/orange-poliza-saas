@@ -313,6 +313,14 @@ def _aplicar_migraciones(con: Connection):
         ("documentos_importados", "hash_sha256", "TEXT"),
         ("polizas", "enviada_contpaqi", "INTEGER NOT NULL DEFAULT 0"),
         ("polizas", "fecha_envio", "TEXT"),
+        ("cfdis", "tipo_comprobante", "TEXT NOT NULL DEFAULT 'I'"),
+        ("cfdis", "moneda", "TEXT NOT NULL DEFAULT 'MXN'"),
+        ("cfdis", "tipo_cambio", "NUMERIC(18,6) NOT NULL DEFAULT 1.0"),
+        ("cfdis", "metodo_pago", "TEXT"),
+        ("cfdis", "descuento", "NUMERIC(18,2) NOT NULL DEFAULT 0.0"),
+        ("cfdi_impuestos", "tipo_factor", "TEXT NOT NULL DEFAULT 'Tasa'"),
+        ("empresas", "cuenta_retencion_iva", "TEXT"),
+        ("empresas", "cuenta_retencion_isr", "TEXT"),
     ]
     cur = con.cursor()
 

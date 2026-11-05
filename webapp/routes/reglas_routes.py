@@ -290,7 +290,9 @@ def pendiente_asignar_rapido(empresa_id, movimiento_id):
         afectable_impuestos = request.form.get("afectable_impuestos") == "on"
 
     empresa = bancos_repo.obtener_empresa(empresa_id)
-    error_iva = validar_cuentas_iva_configuradas(movimiento["tipo"], tiene_iva, afectable_impuestos, empresa)
+    error_iva = validar_cuentas_iva_configuradas(
+        movimiento["tipo"], tiene_iva, afectable_impuestos, empresa, cuenta_contraparte=cuenta_contraparte
+    )
     if error_iva:
         flash(error_iva, "error")
         return redirect(url_for("reglas.pendientes_siguiente", empresa_id=empresa_id))

@@ -73,10 +73,26 @@
                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono">
       </div>
     </div>
-    <label class="flex items-center gap-2 text-sm text-slate-600">
-      <input type="checkbox" name="retenciones_activas" {{ 'checked' if empresa.retenciones_activas }}>
-      Activar manejo de retenciones (IVA/ISR)
-    </label>
+    <div class="border-t border-slate-100 pt-3">
+      <label class="flex items-center gap-2 text-sm text-slate-600 mb-3">
+        <input type="checkbox" name="retenciones_activas" {{ 'checked' if empresa.retenciones_activas }}>
+        Activar manejo de retenciones (IVA/ISR)
+      </label>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-slate-500 mb-1">Cuenta Retención IVA por pagar</label>
+          <input name="cuenta_retencion_iva" list="cuentas-catalogo" value="{{ empresa.cuenta_retencion_iva or '' }}"
+                 placeholder="Ej. 216-01-000"
+                 class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 mb-1">Cuenta Retención ISR por pagar</label>
+          <input name="cuenta_retencion_isr" list="cuentas-catalogo" value="{{ empresa.cuenta_retencion_isr or '' }}"
+                 placeholder="Ej. 216-02-000"
+                 class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono">
+        </div>
+      </div>
+    </div>
     <button class="bg-naranja-600 hover:bg-naranja-700 text-white text-sm font-medium rounded-lg px-4 py-2">
       Guardar configuración
     </button>

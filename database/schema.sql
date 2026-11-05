@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS empresas (
     cuenta_complementaria_egresos   TEXT,
     cuenta_dif_cambiaria            TEXT,
     retenciones_activas             INTEGER NOT NULL DEFAULT 0,
+    cuenta_retencion_iva            TEXT,
+    cuenta_retencion_isr            TEXT,
 
     -- Nombre interno de base de datos en CONTPAQi (ej. "ctNOMBRE_EMPRESA"),
     -- NO el nombre bonito que ve el usuario. Lo usan el bridge y la
@@ -254,6 +256,7 @@ CREATE TABLE IF NOT EXISTS cfdis (
     empresa_id          INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
     uuid                TEXT NOT NULL,
     tipo                TEXT NOT NULL,       -- 'emitido' | 'recibido'
+    tipo_comprobante    TEXT NOT NULL DEFAULT 'I', -- 'I', 'E', 'P', 'N', 'T'
     rfc_emisor          TEXT NOT NULL,
     nombre_emisor       TEXT,
     rfc_receptor        TEXT NOT NULL,
@@ -261,6 +264,10 @@ CREATE TABLE IF NOT EXISTS cfdis (
     fecha               TEXT NOT NULL,
     total               NUMERIC(18,2) NOT NULL,
     subtotal            NUMERIC(18,2) NOT NULL,
+    descuento           NUMERIC(18,2) NOT NULL DEFAULT 0.0,
+    moneda              TEXT NOT NULL DEFAULT 'MXN',
+    tipo_cambio         NUMERIC(18,6) NOT NULL DEFAULT 1.0,
+    metodo_pago         TEXT,               -- 'PUE' | 'PPD'
     serie               TEXT,
     folio               TEXT,
     uuids_relacionados  TEXT,
@@ -275,8 +282,9 @@ CREATE TABLE IF NOT EXISTS cfdi_impuestos (
     base            NUMERIC(18,2) NOT NULL,
     importe         NUMERIC(18,2) NOT NULL,
     tasa            NUMERIC(9,6) NOT NULL,
+    tipo_factor     TEXT NOT NULL DEFAULT 'Tasa', -- 'Tasa' | 'Exento' | 'Cuota'
     es_retencion    INTEGER NOT NULL DEFAULT 0,  -- 0 = traslado normal, 1 = retención
-    tipo_impuesto   TEXT NOT NULL DEFAULT 'IVA'  -- 'IVA' | 'ISR'; solo relevante si es_retencion=1
+    tipo_impuesto   TEXT NOT NULL DEFAULT 'IVA'  -- 'IVA' | 'ISR' | 'IEPS'
 );
 
 -- La conciliación en sí: qué CFDI quedó asociado a qué movimiento, con

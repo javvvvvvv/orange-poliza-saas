@@ -61,6 +61,13 @@ class RepositorioReglas:
     ruta de archivo porque la base ahora es PostgreSQL, compartida por
     todas las instancias de la app."""
 
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def inicializar(self):
+        """Compatibilidad con scripts legacy."""
+        pass
+
     def _conectar(self):
         return get_connection()
 

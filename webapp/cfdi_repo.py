@@ -63,55 +63,60 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
             )
         cur.execute(
             """INSERT INTO cfdis
-               (empresa_id, uuid, tipo, rfc_emisor, nombre_emisor, rfc_receptor, nombre_receptor, fecha, total,
-                subtotal, serie, folio, archivo_origen)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (empresa_id, cfdi.uuid, tipo, cfdi.rfc_emisor, cfdi.nombre_emisor, cfdi.rfc_receptor, cfdi.nombre_receptor,
+               (empresa_id, uuid, tipo, tipo_comprobante, rfc_emisor, nombre_emisor, rfc_receptor, nombre_receptor, fecha, total,
+                subtotal, descuento, moneda, tipo_cambio, metodo_pago, serie, folio, uuids_relacionados, archivo_origen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (empresa_id, cfdi.uuid, tipo, getattr(cfdi, "tipo_comprobante", "I"),
+             cfdi.rfc_emisor, cfdi.nombre_emisor, cfdi.rfc_receptor, cfdi.nombre_receptor,
              cfdi.fecha.strftime("%Y-%m-%d"), cfdi.total, cfdi.subtotal,
-             cfdi.serie, cfdi.folio, ruta),
+             getattr(cfdi, "descuento", 0.0), getattr(cfdi, "moneda", "MXN"), getattr(cfdi, "tipo_cambio", 1.0),
+             getattr(cfdi, "metodo_pago", None), cfdi.serie, cfdi.folio,
+             ",".join(cfdi.uuids_relacionados) if getattr(cfdi, "uuids_relacionados", None) else None, ruta),
         )
         cfdi_id = cur.lastrowid
         importados += 1
 
-        for imp in cfdi.impuestos_trasladados:
-            cur.execute(
-                "INSERT INTO cfdi_impuestos (cfdi_id, base, importe, tasa, es_retencion, tipo_impuesto) "
-                "VALUES (?, ?, ?, ?, 0, 'IVA')",
-                (cfdi_id, imp.base, imp.importe, imp.tasa),
-            )
-        # Las retenciones del CFDI (<Retenciones>) no traen Base ni
-        # TasaOCuota en el XML — se usa el SubTotal del comprobante como
-        # base (así viene en pólizas reales con retenciones) y se
-        # calcula la tasa a partir de eso, para poder llenar F4 igual
-        # que una línea de traslado.
         catalogo_impuesto_sat = {"001": "ISR", "002": "IVA", "003": "IEPS"}
-        for ret in cfdi.impuestos_retenidos:
-            tipo = catalogo_impuesto_sat.get(ret.impuesto, "IVA")
-            base = cfdi.subtotal
-            tasa = round(ret.importe / base, 6) if base else 0.0
+        for imp in cfdi.impuestos_trasladados:
+            tipo_imp = catalogo_impuesto_sat.get(getattr(imp, "impuesto", "002"), getattr(imp, "impuesto", "IVA"))
+            tf = getattr(imp, "tipo_factor", "Tasa")
             cur.execute(
-                "INSERT INTO cfdi_impuestos (cfdi_id, base, importe, tasa, es_retencion, tipo_impuesto) "
-                "VALUES (?, ?, ?, ?, 1, ?)",
-                (cfdi_id, base, ret.importe, tasa, tipo),
+                "INSERT INTO cfdi_impuestos (cfdi_id, base, importe, tasa, tipo_factor, es_retencion, tipo_impuesto) "
+                "VALUES (?, ?, ?, ?, ?, 0, ?)",
+                (cfdi_id, imp.base, imp.importe, imp.tasa, tf, tipo_imp),
+            )
+
+        for ret in cfdi.impuestos_retenidos:
+            tipo_imp = catalogo_impuesto_sat.get(getattr(ret, "impuesto", "002"), getattr(ret, "impuesto", "IVA"))
+            b_ret = getattr(ret, "base", 0.0) or cfdi.subtotal
+            t_ret = getattr(ret, "tasa", 0.0) or (round(ret.importe / b_ret, 6) if b_ret else 0.0)
+            cur.execute(
+                "INSERT INTO cfdi_impuestos (cfdi_id, base, importe, tasa, tipo_factor, es_retencion, tipo_impuesto) "
+                "VALUES (?, ?, ?, ?, 'Tasa', 1, ?)",
+                (cfdi_id, b_ret, ret.importe, t_ret, tipo_imp),
             )
 
     con.commit()
 
     # -----------------------------------------------------------------
-    # Conciliar TODOS los CFDI de la empresa que aún no tienen ninguna
-    # fila en cfdi_movimiento contra TODOS los movimientos que aún no
-    # están conciliados. Así, si subes CFDIs antes o después del Excel,
-    # igual se cruzan.
+    # Conciliar únicamente los CFDI y movimientos que tienen saldo pendiente
+    # real (evitando re-conciliar facturas o movimientos ya liquidados).
     # -----------------------------------------------------------------
     cfdis_db = cur.execute(
-        """SELECT c.* FROM cfdis c
-           WHERE c.empresa_id = ?""",
+        """SELECT c.*,
+                  COALESCE((SELECT SUM(importe_aplicado) FROM cfdi_movimiento cm WHERE cm.cfdi_id = c.id AND cm.confirmado = 1), 0) AS aplicado_confirmado
+           FROM cfdis c
+           WHERE c.empresa_id = ?
+             AND c.total > COALESCE((SELECT SUM(importe_aplicado) FROM cfdi_movimiento cm WHERE cm.cfdi_id = c.id AND cm.confirmado = 1), 0) + 0.01""",
         (empresa_id,),
     ).fetchall()
 
     movimientos_db = cur.execute(
-        """SELECT m.* FROM movimientos m
-           WHERE m.empresa_id = ? AND m.id NOT IN (SELECT movimiento_id FROM cfdi_movimiento)""",
+        """SELECT m.*,
+                  COALESCE((SELECT SUM(importe_aplicado) FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1), 0) AS aplicado_confirmado
+           FROM movimientos m
+           WHERE m.empresa_id = ?
+             AND m.total > COALESCE((SELECT SUM(importe_aplicado) FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1), 0) + 0.01""",
         (empresa_id,),
     ).fetchall()
 
@@ -121,14 +126,32 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
         impuestos = cur.execute(
             "SELECT * FROM cfdi_impuestos WHERE cfdi_id = ?", (fila["id"],)
         ).fetchall()
-        from cfdi_importer import CFDI, ImpuestoTraslado
+        from cfdi_importer import CFDI, ImpuestoTraslado, ImpuestoRetenido
+        saldo_cfdi = float(fila["total"]) - float(fila["aplicado_confirmado"])
         obj = CFDI(
             uuid=fila["uuid"], rfc_emisor=fila["rfc_emisor"], nombre_emisor=fila.get("nombre_emisor") or "",
             rfc_receptor=fila["rfc_receptor"], nombre_receptor=fila.get("nombre_receptor") or "",
-            fecha=datetime.strptime(fila["fecha"], "%Y-%m-%d"), total=fila["total"],
-            subtotal=fila["subtotal"], serie=fila["serie"], folio=fila["folio"],
-            tipo_comprobante="I",
-            impuestos_trasladados=[ImpuestoTraslado(i["base"], i["importe"], i["tasa"]) for i in impuestos],
+            fecha=datetime.strptime(fila["fecha"], "%Y-%m-%d"), total=round(saldo_cfdi, 2),
+            subtotal=round(float(fila["subtotal"]), 2), serie=fila["serie"], folio=fila["folio"],
+            tipo_comprobante=fila.get("tipo_comprobante", "I"),
+            impuestos_trasladados=[
+                ImpuestoTraslado(
+                    base=float(i["base"]), importe=float(i["importe"]), tasa=float(i["tasa"]),
+                    impuesto=i["tipo_impuesto"], tipo_factor=i.get("tipo_factor", "Tasa")
+                ) for i in impuestos if not i["es_retencion"]
+            ],
+            impuestos_retenidos=[
+                ImpuestoRetenido(
+                    importe=float(i["importe"]), impuesto=i["tipo_impuesto"],
+                    base=float(i["base"]), tasa=float(i["tasa"])
+                ) for i in impuestos if i["es_retencion"]
+            ],
+            uuids_relacionados=[u.strip() for u in (fila.get("uuids_relacionados") or "").split(",") if u.strip()],
+            archivo_origen=fila.get("archivo_origen", ""),
+            moneda=fila.get("moneda", "MXN"),
+            tipo_cambio=float(fila.get("tipo_cambio", 1.0)),
+            metodo_pago=fila.get("metodo_pago"),
+            descuento=float(fila.get("descuento", 0.0)),
         )
         cfdis_obj.append(obj)
         mapa_cfdi_id[id(obj)] = fila["id"]
@@ -136,8 +159,10 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
     movs_dicts = []
     mapa_mov_id = {}
     for fila in movimientos_db:
+        saldo_mov = float(fila["total"]) - float(fila["aplicado_confirmado"])
         d = {
-            "tipo": fila["tipo"], "total": fila["total"],
+            "id": fila["id"],
+            "tipo": fila["tipo"], "total": round(saldo_mov, 2),
             "fecha": datetime.strptime(fila["fecha"], "%Y-%m-%d"),
             "rfc_contraparte": fila["rfc_contraparte"], "descripcion": fila["descripcion"],
             "referencia": fila["referencia_bancaria"] or "",
@@ -154,7 +179,15 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
     conciliados_resumen = []
     for propuesta in propuestas:
         grupo_id = uuid.uuid4().hex
-        auto_confirmar = True # Autoconfirmamos todas las sugerencias avanzadas (N:1, 1:N, parciales) por peticion del usuario
+        # REGLA CONTABLE SEGURA:
+        # Solo se auto-confirma si es coincidencia exacta 1:1, confianza >= 95 y candidato único.
+        # Todo lo ambiguo, parcial o sin RFC va a revisión (confirmado = 0).
+        auto_confirmar = (
+            propuesta.tipo_match == "exacto"
+            and propuesta.confianza >= UMBRAL_AUTOCONFIRMAR
+            and len(propuesta.cfdis) == 1
+            and len(propuesta.movimientos) == 1
+        )
 
         for aplicacion in propuesta.aplicaciones:
             cfdi_id = mapa_cfdi_id[id(aplicacion.cfdi)]

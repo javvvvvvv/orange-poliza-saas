@@ -50,17 +50,19 @@ class ErrorCFDI(Exception):
 class ImpuestoTraslado:
     base: float
     importe: float
-    tasa: float          # ej. 0.16
-    impuesto: str = "002"  # 002 = IVA (catálogo SAT c_Impuesto)
+    tasa: float          # ej. 0.16, 0.08, 0.0
+    impuesto: str = "002"  # 001 = ISR, 002 = IVA, 003 = IEPS
+    tipo_factor: str = "Tasa"  # 'Tasa', 'Exento', 'Cuota'
 
 @dataclass
 class ImpuestoRetenido:
     """Un nodo <Retencion> del CFDI. A diferencia de <Traslado>, el XML
-    no trae Base ni TasaOCuota — solo Impuesto e Importe; la base real
-    se toma del SubTotal del comprobante al construir el ImpuestoPoliza
-    (ver cfdi_matcher.py / movimientos_repo.py)."""
+    no siempre trae Base ni TasaOCuota — solo Impuesto e Importe; la base real
+    se toma del SubTotal del comprobante al construir el ImpuestoPoliza."""
     importe: float
-    impuesto: str = "002"  # 001 = ISR, 002 = IVA (catálogo SAT c_Impuesto)
+    impuesto: str = "002"  # 001 = ISR, 002 = IVA, 003 = IEPS
+    base: float = 0.0
+    tasa: float = 0.0
 
 @dataclass
 class CFDI:
@@ -77,8 +79,12 @@ class CFDI:
     tipo_comprobante: str  # 'I' ingreso, 'E' egreso, 'P' pago, 'N' nómina, 'T' traslado
     impuestos_trasladados: list = field(default_factory=list)  # list[ImpuestoTraslado]
     impuestos_retenidos: list = field(default_factory=list)  # list[ImpuestoRetenido]
-    uuids_relacionados: list = field(default_factory=list) # UUIDs de las facturas pagadas (si es REP)
+    uuids_relacionados: list = field(default_factory=list) # UUIDs de las facturas pagadas (si es REP) o relacionadas (ej. Nota de Crédito)
     archivo_origen: str = ""
+    moneda: str = "MXN"
+    tipo_cambio: float = 1.0
+    metodo_pago: Optional[str] = None  # 'PUE', 'PPD'
+    descuento: float = 0.0
 
 def _detectar_namespace_comprobante(raiz) -> str:
     tag = raiz.tag
@@ -128,13 +134,27 @@ def importar_cfdi(ruta_xml: str) -> CFDI:
             f"¿Es un XML sin timbrar?"
         )
 
-    tipo_comprobante = attr("TipoDeComprobante", "I")
+    tipo_comprobante = attr("TipoDeComprobante", "I").upper()
     total = round(float(attr("Total", 0)), 2)
     subtotal = round(float(attr("SubTotal", 0)), 2)
+    descuento = round(float(attr("Descuento", 0)), 2)
+    moneda = attr("Moneda", "MXN").upper()
+    try:
+        tipo_cambio = float(attr("TipoCambio", 1.0))
+    except (ValueError, TypeError):
+        tipo_cambio = 1.0
+    metodo_pago = attr("MetodoPago")
     traslados = []
     retenciones = []
     
     uuids_relacionados = []
+
+    # Extraer CFDIS Relacionados (ej. en Notas de Crédito 'E')
+    for nodo_rel in raiz.findall(f"{{{ns_cfdi}}}CfdiRelacionados"):
+        for rel in nodo_rel.findall(f"{{{ns_cfdi}}}CfdiRelacionado"):
+            u_rel = rel.get("UUID")
+            if u_rel:
+                uuids_relacionados.append(u_rel.strip().upper())
     
     if tipo_comprobante == "P" and total == 0:
         if complemento is not None:
@@ -153,38 +173,73 @@ def importar_cfdi(ruta_xml: str) -> CFDI:
                     base16 = float(totales.get("TotalTrasladosBaseIVA16") or 0)
                     imp16 = float(totales.get("TotalTrasladosImpuestoIVA16") or 0)
                     if base16 > 0:
-                        traslados.append(ImpuestoTraslado(base=base16, importe=imp16, tasa=0.16, impuesto="002"))
+                        traslados.append(ImpuestoTraslado(base=base16, importe=imp16, tasa=0.16, impuesto="002", tipo_factor="Tasa"))
+                    base08 = float(totales.get("TotalTrasladosBaseIVA8") or 0)
+                    imp08 = float(totales.get("TotalTrasladosImpuestoIVA8") or 0)
+                    if base08 > 0:
+                        traslados.append(ImpuestoTraslado(base=base08, importe=imp08, tasa=0.08, impuesto="002", tipo_factor="Tasa"))
+                    base0 = float(totales.get("TotalTrasladosBaseIVA0") or 0)
+                    if base0 > 0:
+                        traslados.append(ImpuestoTraslado(base=base0, importe=0.0, tasa=0.0, impuesto="002", tipo_factor="Tasa"))
+                    base_ex = float(totales.get("TotalTrasladosBaseIVAExento") or 0)
+                    if base_ex > 0:
+                        traslados.append(ImpuestoTraslado(base=base_ex, importe=0.0, tasa=0.0, impuesto="002", tipo_factor="Exento"))
                 uuids = []
                 for p in nodo_pagos20.findall(f"{{{pago20_ns}}}Pago"):
                     for dr in p.findall(f"{{{pago20_ns}}}DoctoRelacionado"):
                         if dr.get("IdDocumento"):
-                            uuids.append(dr.get("IdDocumento").upper())
-                uuids_relacionados = uuids
+                            uuids.append(dr.get("IdDocumento").strip().upper())
+                uuids_relacionados.extend(uuids)
                         
             nodo_pagos10 = complemento.find(f"{{{pago10_ns}}}Pagos")
             if nodo_pagos10 is not None:
                 monto_total = sum(float(p.get("Monto", 0)) for p in nodo_pagos10.findall(f"{{{pago10_ns}}}Pago"))
                 total = round(monto_total, 2)
                 subtotal = total
+                uuids = []
+                for p in nodo_pagos10.findall(f"{{{pago10_ns}}}Pago"):
+                    for dr in p.findall(f"{{{pago10_ns}}}DoctoRelacionado"):
+                        if dr.get("IdDocumento"):
+                            uuids.append(dr.get("IdDocumento").strip().upper())
+                uuids_relacionados.extend(uuids)
 
     impuestos_nodo = raiz.find(f"{{{ns_cfdi}}}Impuestos")
     if impuestos_nodo is not None:
         nodo_traslados = impuestos_nodo.find(f"{{{ns_cfdi}}}Traslados")
         if nodo_traslados is not None:
             for traslado in nodo_traslados.findall(f"{{{ns_cfdi}}}Traslado"):
+                tf = traslado.get("TipoFactor", "Tasa")
+                b = float(traslado.get("Base", 0))
+                imp_cve = traslado.get("Impuesto", "002")
+                if tf == "Exento":
+                    imp = 0.0
+                    tas = 0.0
+                else:
+                    imp = float(traslado.get("Importe", 0))
+                    tas = float(traslado.get("TasaOCuota", 0))
                 traslados.append(ImpuestoTraslado(
-                    base=float(traslado.get("Base", 0)),
-                    importe=float(traslado.get("Importe", 0)),
-                    tasa=float(traslado.get("TasaOCuota", 0)),
-                    impuesto=traslado.get("Impuesto", "002"),
+                    base=b,
+                    importe=imp,
+                    tasa=tas,
+                    impuesto=imp_cve,
+                    tipo_factor=tf,
                 ))
         nodo_retenciones = impuestos_nodo.find(f"{{{ns_cfdi}}}Retenciones")
         if nodo_retenciones is not None:
             for retencion in nodo_retenciones.findall(f"{{{ns_cfdi}}}Retencion"):
+                imp_cve = retencion.get("Impuesto", "002")
+                imp_ret = float(retencion.get("Importe", 0))
+                b_ret = float(retencion.get("Base", 0)) or subtotal
+                t_ret = round(imp_ret / b_ret, 6) if b_ret > 0 else 0.0
                 retenciones.append(ImpuestoRetenido(
-                    importe=float(retencion.get("Importe", 0)),
-                    impuesto=retencion.get("Impuesto", "002"),
+                    importe=imp_ret,
+                    impuesto=imp_cve,
+                    base=b_ret,
+                    tasa=t_ret,
                 ))
+
+    # Eliminar duplicados en uuids_relacionados preservando orden
+    uuids_relacionados = list(dict.fromkeys(uuids_relacionados))
 
     return CFDI(
         uuid=uuid,
@@ -202,6 +257,10 @@ def importar_cfdi(ruta_xml: str) -> CFDI:
         impuestos_retenidos=retenciones,
         uuids_relacionados=uuids_relacionados,
         archivo_origen=ruta_xml,
+        moneda=moneda,
+        tipo_cambio=tipo_cambio,
+        metodo_pago=metodo_pago,
+        descuento=descuento,
     )
 
 def importar_carpeta_cfdi(ruta_carpeta: str) -> dict:

@@ -108,25 +108,66 @@ class TotalPolizasGeneradas(int):
         return instancia
 
 def _aplicar_impuestos_cfdi_a_movimiento(mov, cfdis_asoc):
-    """Aplica el IVA y retenciones exactos proporcionales de los CFDIs confirmados."""
+    """Aplica el desglose exacto de IVA, IEPS, retenciones y bases proporcionales de los CFDIs confirmados."""
     if not cfdis_asoc:
         return
     iva_exacto_tot = MontoDecimal("0.00")
+    ieps_tot = MontoDecimal("0.00")
     ret_iva_tot = MontoDecimal("0.00")
     ret_isr_tot = MontoDecimal("0.00")
+    base_grav_tot = MontoDecimal("0.00")
+    base_exenta_tot = MontoDecimal("0.00")
+    base_0_tot = MontoDecimal("0.00")
+    descuento_tot = MontoDecimal("0.00")
+
     for c_asoc in cfdis_asoc:
         cfdi_tot = a_decimal(c_asoc["cfdi_total"])
-        if cfdi_tot > Decimal("0.00"):
-            prop = min(Decimal("1.0"), a_decimal(c_asoc["importe_aplicado"]) / cfdi_tot)
-            iva_exacto_tot += a_decimal(c_asoc.get("iva_cfdi", 0)) * prop
-            ret_iva_tot += a_decimal(c_asoc.get("ret_iva_cfdi", 0)) * prop
-            ret_isr_tot += a_decimal(c_asoc.get("ret_isr_cfdi", 0)) * prop
+        imp_aplicado = a_decimal(c_asoc["importe_aplicado"])
+        if cfdi_tot <= Decimal("0.00"):
+            continue
+
+        c_iva = a_decimal(c_asoc.get("iva_cfdi", 0))
+        c_ieps = a_decimal(c_asoc.get("ieps_cfdi", 0))
+        c_ret_iva = a_decimal(c_asoc.get("ret_iva_cfdi", 0))
+        c_ret_isr = a_decimal(c_asoc.get("ret_isr_cfdi", 0))
+        c_base_grav = a_decimal(c_asoc.get("base_gravada_cfdi", 0))
+        c_base_exenta = a_decimal(c_asoc.get("base_exenta_cfdi", 0))
+        c_base_0 = a_decimal(c_asoc.get("base_0_cfdi", 0))
+        c_desc = a_decimal(c_asoc.get("cfdi_descuento", 0))
+
+        # Si el importe aplicado cubre el CFDI (o es liquidación total >= 99.99%)
+        if imp_aplicado >= cfdi_tot - Decimal("0.01"):
+            iva_exacto_tot += c_iva
+            ieps_tot += c_ieps
+            ret_iva_tot += c_ret_iva
+            ret_isr_tot += c_ret_isr
+            base_grav_tot += c_base_grav
+            base_exenta_tot += c_base_exenta
+            base_0_tot += c_base_0
+            descuento_tot += c_desc
+        else:
+            prop = imp_aplicado / cfdi_tot
+            iva_exacto_tot += redondear_moneda(c_iva * prop)
+            ieps_tot += redondear_moneda(c_ieps * prop)
+            ret_iva_tot += redondear_moneda(c_ret_iva * prop)
+            ret_isr_tot += redondear_moneda(c_ret_isr * prop)
+            base_grav_tot += redondear_moneda(c_base_grav * prop)
+            base_exenta_tot += redondear_moneda(c_base_exenta * prop)
+            base_0_tot += redondear_moneda(c_base_0 * prop)
+            descuento_tot += redondear_moneda(c_desc * prop)
+
     mov["iva_exacto"] = redondear_moneda(iva_exacto_tot)
+    mov["ieps"] = redondear_moneda(ieps_tot)
     if ret_iva_tot > Decimal("0.00"):
         mov["ret_iva"] = redondear_moneda(ret_iva_tot)
     if ret_isr_tot > Decimal("0.00"):
         mov["ret_isr"] = redondear_moneda(ret_isr_tot)
-    mov["tiene_iva"] = True
+    if base_grav_tot > Decimal("0.00") or base_exenta_tot > Decimal("0.00") or base_0_tot > Decimal("0.00"):
+        mov["base_gravada"] = redondear_moneda(base_grav_tot)
+        mov["base_exenta"] = redondear_moneda(base_exenta_tot)
+        mov["base_0"] = redondear_moneda(base_0_tot)
+    mov["descuento"] = redondear_moneda(descuento_tot)
+    mov["tiene_iva"] = (iva_exacto_tot > Decimal("0.00"))
 
 def _construir_info_descuadre(mov, nombre_regla, resultado):
     cargos = redondear_moneda(
@@ -178,13 +219,14 @@ def clasificar_pendientes(empresa_id):
 
     with get_connection() as con:
         emp_cfg = con.execute(
-            "SELECT tasa_iva, tasa_retencion_iva, tasa_retencion_isr FROM empresas WHERE id = ?",
+            "SELECT tasa_iva, tasa_retencion_iva, tasa_retencion_isr, retenciones_activas FROM empresas WHERE id = ?",
             (empresa_id,),
         ).fetchone()
         if emp_cfg:
             tasa_iva = a_decimal(emp_cfg["tasa_iva"], "0.16")
-            tasa_ret_iva = a_decimal(emp_cfg["tasa_retencion_iva"], "0.0")
-            tasa_ret_isr = a_decimal(emp_cfg["tasa_retencion_isr"], "0.0")
+            ret_activas = bool(emp_cfg.get("retenciones_activas"))
+            tasa_ret_iva = a_decimal(emp_cfg["tasa_retencion_iva"], "0.0") if ret_activas else MontoDecimal("0.0")
+            tasa_ret_isr = a_decimal(emp_cfg["tasa_retencion_isr"], "0.0") if ret_activas else MontoDecimal("0.0")
         else:
             tasa_iva = MontoDecimal("0.16")
             tasa_ret_iva = MontoDecimal("0.0")
@@ -200,10 +242,15 @@ def clasificar_pendientes(empresa_id):
         cfdis_map: dict[int, list] = {}
         if pendientes_ids:
             cur.execute(f"""
-                SELECT cm.movimiento_id, c.total AS cfdi_total, cm.importe_aplicado,
+                SELECT cm.movimiento_id, c.total AS cfdi_total, c.subtotal AS cfdi_subtotal, c.descuento AS cfdi_descuento,
+                       cm.importe_aplicado,
                        COALESCE((SELECT SUM(importe) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 0 AND ci.tipo_impuesto = 'IVA'), 0) AS iva_cfdi,
+                       COALESCE((SELECT SUM(importe) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 0 AND ci.tipo_impuesto = 'IEPS'), 0) AS ieps_cfdi,
                        COALESCE((SELECT SUM(importe) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 1 AND ci.tipo_impuesto = 'IVA'), 0) AS ret_iva_cfdi,
-                       COALESCE((SELECT SUM(importe) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 1 AND ci.tipo_impuesto = 'ISR'), 0) AS ret_isr_cfdi
+                       COALESCE((SELECT SUM(importe) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 1 AND ci.tipo_impuesto = 'ISR'), 0) AS ret_isr_cfdi,
+                       COALESCE((SELECT SUM(base) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 0 AND ci.tasa > 0), 0) AS base_gravada_cfdi,
+                       COALESCE((SELECT SUM(base) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 0 AND (ci.tipo_factor = 'Exento' OR ci.tipo_impuesto = 'EXENTO')), 0) AS base_exenta_cfdi,
+                       COALESCE((SELECT SUM(base) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 0 AND ci.tasa = 0 AND ci.tipo_factor != 'Exento'), 0) AS base_0_cfdi
                 FROM cfdis c
                 JOIN cfdi_movimiento cm ON cm.cfdi_id = c.id
                 WHERE cm.movimiento_id IN ({','.join(pendientes_ids)}) AND cm.confirmado = 1
@@ -239,6 +286,15 @@ def clasificar_pendientes(empresa_id):
                 es_certeza = True
             elif match.nivel == "contiene" and match.confianza >= 90:
                 es_certeza = True
+
+            # Decisión A1: Si un movimiento no tiene CFDI confirmado y la regla aplica IVA,
+            # se estima con la tasa configurada pero queda en 'sugerido' para autorización contable
+            regla_usa_iva = any(
+                ("IVA" in (lp.formula or "").upper() or "BASE" in (lp.formula or "").upper())
+                for lp in plantillas.get(match.regla.id, [])
+            )
+            if not cfdis_asoc and regla_usa_iva:
+                es_certeza = False
 
             if es_certeza:
                 con.execute(
@@ -310,15 +366,16 @@ def generar_polizas_pendientes(empresa_id, inicio_ingreso=None, inicio_egreso=No
     descuadres = []
     with get_connection() as con:
         emp_cfg = con.execute(
-            "SELECT nombre, tasa_iva, tasa_retencion_iva, tasa_retencion_isr FROM empresas WHERE id = ?",
+            "SELECT nombre, tasa_iva, tasa_retencion_iva, tasa_retencion_isr, retenciones_activas FROM empresas WHERE id = ?",
             (empresa_id,),
         ).fetchone()
         verificar_licencia_empresa(emp_cfg["nombre"] if emp_cfg else "")
 
         if emp_cfg:
             tasa_iva = a_decimal(emp_cfg["tasa_iva"], "0.16")
-            tasa_ret_iva = a_decimal(emp_cfg["tasa_retencion_iva"], "0.0")
-            tasa_ret_isr = a_decimal(emp_cfg["tasa_retencion_isr"], "0.0")
+            ret_activas = bool(emp_cfg.get("retenciones_activas"))
+            tasa_ret_iva = a_decimal(emp_cfg["tasa_retencion_iva"], "0.0") if ret_activas else MontoDecimal("0.0")
+            tasa_ret_isr = a_decimal(emp_cfg["tasa_retencion_isr"], "0.0") if ret_activas else MontoDecimal("0.0")
         else:
             tasa_iva = MontoDecimal("0.16")
             tasa_ret_iva = MontoDecimal("0.0")
@@ -364,11 +421,16 @@ def generar_polizas_pendientes(empresa_id, inicio_ingreso=None, inicio_egreso=No
 
             # Buscar CFDIs asociados al movimiento ANTES de generar la póliza
             cur.execute("""
-                SELECT c.folio, c.uuid, c.nombre_emisor, c.nombre_receptor, c.rfc_emisor, c.rfc_receptor,
-                       c.total AS cfdi_total, cm.importe_aplicado,
+                SELECT c.id AS cfdi_id, c.folio, c.uuid, c.nombre_emisor, c.nombre_receptor, c.rfc_emisor, c.rfc_receptor,
+                       c.total AS cfdi_total, c.subtotal AS cfdi_subtotal, c.descuento AS cfdi_descuento,
+                       cm.importe_aplicado,
                        COALESCE((SELECT SUM(importe) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 0 AND ci.tipo_impuesto = 'IVA'), 0) AS iva_cfdi,
+                       COALESCE((SELECT SUM(importe) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 0 AND ci.tipo_impuesto = 'IEPS'), 0) AS ieps_cfdi,
                        COALESCE((SELECT SUM(importe) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 1 AND ci.tipo_impuesto = 'IVA'), 0) AS ret_iva_cfdi,
-                       COALESCE((SELECT SUM(importe) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 1 AND ci.tipo_impuesto = 'ISR'), 0) AS ret_isr_cfdi
+                       COALESCE((SELECT SUM(importe) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 1 AND ci.tipo_impuesto = 'ISR'), 0) AS ret_isr_cfdi,
+                       COALESCE((SELECT SUM(base) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 0 AND ci.tasa > 0), 0) AS base_gravada_cfdi,
+                       COALESCE((SELECT SUM(base) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 0 AND (ci.tipo_factor = 'Exento' OR ci.tipo_impuesto = 'EXENTO')), 0) AS base_exenta_cfdi,
+                       COALESCE((SELECT SUM(base) FROM cfdi_impuestos ci WHERE ci.cfdi_id = c.id AND ci.es_retencion = 0 AND ci.tasa = 0 AND ci.tipo_factor != 'Exento'), 0) AS base_0_cfdi
                 FROM cfdis c
                 JOIN cfdi_movimiento cm ON cm.cfdi_id = c.id
                 WHERE cm.movimiento_id = ? AND cm.confirmado = 1

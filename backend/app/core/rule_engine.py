@@ -82,6 +82,16 @@ class MatchResult:
     motivo: str      # explicación humana de por qué (o por qué no) hizo match
     nivel: str        # 'rfc' | 'cuenta_bancaria' | 'exacta' | 'contiene' | 'sin_coincidencia'
 
+def _es_compatible_tercero(regla: Regla, rfc_mov: str, cuenta_mov: str) -> bool:
+    """Verifica si la regla no contradice el RFC o cuenta bancaria del movimiento."""
+    if regla.rfc_contraparte and rfc_mov:
+        if regla.rfc_contraparte.strip().upper() != rfc_mov:
+            return False
+    if regla.cuenta_bancaria_contraparte and cuenta_mov:
+        if regla.cuenta_bancaria_contraparte.strip() != cuenta_mov:
+            return False
+    return True
+
 def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
     descripcion_norm = normalizar_texto(movimiento.get("descripcion", ""))
     tipo_mov = movimiento.get("tipo")
@@ -108,6 +118,8 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
 
     # --- Nivel 2: cuenta bancaria exacta ---
     for regla in reglas_ordenadas:
+        if not _es_compatible_tercero(regla, rfc_mov, cuenta_mov):
+            continue
         if (regla.cuenta_bancaria_contraparte and cuenta_mov
                 and regla.cuenta_bancaria_contraparte == cuenta_mov):
             if regla.tipo_movimiento and regla.tipo_movimiento != tipo_mov:
@@ -122,6 +134,8 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
 
     # --- Nivel 3: descripcion exacta ---
     for regla in reglas_ordenadas:
+        if not _es_compatible_tercero(regla, rfc_mov, cuenta_mov):
+            continue
         if regla.descripcion_exacta:
             desc_original = movimiento.get("descripcion", "")
             if regla.descripcion_exacta.strip().upper() == desc_original.strip().upper():
@@ -139,6 +153,8 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
     mejor_match = None
     mejor_confianza = -1
     for regla in reglas_ordenadas:
+        if not _es_compatible_tercero(regla, rfc_mov, cuenta_mov):
+            continue
         if regla.tipo_movimiento and regla.tipo_movimiento != tipo_mov:
             continue
         for palabra_clave in regla.descripcion_contiene:
@@ -155,6 +171,11 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
                     confianza = 95
                 else:
                     confianza = min(90, 75 + len(palabra_norm) * 2)
+
+                # Si el movimiento tiene un RFC conocido pero la regla no especifica RFC,
+                # se reduce la confianza para sugerir y evitar clasificaciones erróneas
+                if rfc_mov and not regla.rfc_contraparte:
+                    confianza = min(confianza, 80)
 
                 if confianza > mejor_confianza:
                     mejor_confianza = confianza
@@ -173,6 +194,8 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
     # --- Nivel 5: coincidencia difusa ---
     candidatos = []
     for regla in reglas_ordenadas:
+        if not _es_compatible_tercero(regla, rfc_mov, cuenta_mov):
+            continue
         if regla.tipo_movimiento and regla.tipo_movimiento != tipo_mov:
             continue
         for palabra_clave in regla.descripcion_contiene:
@@ -190,9 +213,12 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
                 mejor_regla_difusa = regla
 
         if mejor_score >= UMBRAL_DIFUSO and mejor_regla_difusa is not None:
+            confianza_dif = confianza_desde_similitud(mejor_score)
+            if rfc_mov and not mejor_regla_difusa.rfc_contraparte:
+                confianza_dif = min(confianza_dif, 80)
             return MatchResult(
                 regla=mejor_regla_difusa,
-                confianza=confianza_desde_similitud(mejor_score),
+                confianza=confianza_dif,
                 motivo=(
                     f"La descripción '{descripcion_norm}' se parece "
                     f"({round(mejor_score * 100)}% de similitud, considerando "

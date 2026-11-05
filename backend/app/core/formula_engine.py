@@ -155,12 +155,17 @@ _FUNCIONES_PERMITIDAS = {
 VARIABLES_DISPONIBLES = [
     "TOTAL",        # importe total del movimiento (siempre positivo)
     "TASA_IVA",     # ej. 0.16
-    "BASE",         # TOTAL / (1 + TASA_IVA), calculado automáticamente si hay IVA
+    "BASE",         # Subtotal antes de impuestos y retenciones
     "SUBTOTAL",     # Alias contable para BASE
-    "IVA",          # TOTAL - BASE, calculado automáticamente si hay IVA
-    "RET_IVA",      # retención de IVA capturada manualmente (0 si no aplica)
-    "RET_ISR",      # retención de ISR capturada manualmente (0 si no aplica)
+    "IVA",          # IVA acreditable / trasladado
+    "RET_IVA",      # retención de IVA (0 si no aplica)
+    "RET_ISR",      # retención de ISR (0 si no aplica)
     "TIPO_CAMBIO",  # tipo de cambio si el movimiento es en dólares (1.0 si es en pesos)
+    "IEPS",         # impuesto especial sobre producción y servicios (0 si no aplica)
+    "BASE_GRAVADA", # base gravada para IVA
+    "BASE_EXENTA",  # base exenta de IVA
+    "BASE_0",       # base a tasa 0% de IVA
+    "DESCUENTO",    # importe de descuento comercial si aplica
 ]
 
 def evaluar_formula(expresion: str, variables: dict) -> MontoDecimal:
@@ -247,10 +252,19 @@ def construir_variables(
     tasa_ret_iva=Decimal("0.0"),
     tasa_ret_isr=Decimal("0.0"),
     iva_exacto=None,
+    ieps=Decimal("0.00"),
+    base_gravada=None,
+    base_exenta=Decimal("0.00"),
+    base_0=Decimal("0.00"),
+    descuento=Decimal("0.00"),
 ) -> dict[str, MontoDecimal]:
     """
     Construye el diccionario de variables `Decimal` que se le pasa a evaluar_formula(),
     a partir de los datos de un movimiento ya normalizado.
+
+    Ecuación contable mexicana fundamental:
+        TOTAL = BASE + IEPS + IVA - RET_IVA - RET_ISR
+        BASE = BASE_GRAVADA + BASE_EXENTA + BASE_0 (o SUBTOTAL - DESCUENTO)
     """
     total_d = redondear_moneda(total)
     tasa_iva_d = a_decimal(tasa_iva, "0.16")
@@ -259,34 +273,46 @@ def construir_variables(
     ret_iva_d = redondear_moneda(ret_iva)
     ret_isr_d = redondear_moneda(ret_isr)
     tipo_cambio_d = a_decimal(tipo_cambio, "1.0")
+    ieps_d = redondear_moneda(ieps)
+    base_exenta_d = redondear_moneda(base_exenta)
+    base_0_d = redondear_moneda(base_0)
+    descuento_d = redondear_moneda(descuento)
 
     if tiene_iva:
-        divisor = Decimal("1") + tasa_iva_d - tasa_ret_iva_d - tasa_ret_isr_d
-        tiene_tasas_ret = (tasa_ret_iva_d > 0 or tasa_ret_isr_d > 0)
         if iva_exacto is not None:
+            # Caso con CFDI o desglose de IVA exacto conocido
             iva_d = redondear_moneda(iva_exacto)
-            base_prelim = redondear_moneda(total_d / divisor) if divisor != 0 else (total_d - iva_d)
-            if ret_iva_d == Decimal("0.00") and tasa_ret_iva_d > 0:
-                ret_iva_d = redondear_moneda(base_prelim * tasa_ret_iva_d)
-            if ret_isr_d == Decimal("0.00") and tasa_ret_isr_d > 0:
-                ret_isr_d = redondear_moneda(base_prelim * tasa_ret_isr_d)
-            if tiene_tasas_ret:
-                base_d = redondear_moneda(total_d - iva_d + ret_iva_d + ret_isr_d)
+            if base_gravada is not None:
+                base_gravada_d = redondear_moneda(base_gravada)
+                base_d = redondear_moneda(base_gravada_d + base_exenta_d + base_0_d)
             else:
-                base_d = redondear_moneda(total_d - iva_d)
+                # Deducción matemática exacta de BASE por identidad contable
+                base_d = redondear_moneda(total_d - iva_d - ieps_d + ret_iva_d + ret_isr_d)
+                base_gravada_d = redondear_moneda(base_d - base_exenta_d - base_0_d)
+                if base_gravada_d < Decimal("0.00"):
+                    base_gravada_d = base_d
         else:
+            # Caso estimado sin CFDI
+            divisor = Decimal("1") + tasa_iva_d - tasa_ret_iva_d - tasa_ret_isr_d
+            tiene_tasas_ret = (tasa_ret_iva_d > 0 or tasa_ret_isr_d > 0)
             base_d = redondear_moneda(total_d / divisor) if divisor != 0 else total_d
             if ret_iva_d == Decimal("0.00") and tasa_ret_iva_d > 0:
                 ret_iva_d = redondear_moneda(base_d * tasa_ret_iva_d)
             if ret_isr_d == Decimal("0.00") and tasa_ret_isr_d > 0:
                 ret_isr_d = redondear_moneda(base_d * tasa_ret_isr_d)
+            # IVA residual para cuadre perfecto a centavo
             if tiene_tasas_ret:
-                iva_d = redondear_moneda(total_d - base_d + ret_iva_d + ret_isr_d)
+                iva_d = redondear_moneda(total_d - base_d - ieps_d + ret_iva_d + ret_isr_d)
             else:
-                iva_d = redondear_moneda(total_d - base_d)
+                iva_d = redondear_moneda(total_d - base_d - ieps_d)
+            base_gravada_d = base_d
     else:
-        base_d = total_d
+        # Movimiento sin IVA (tasa 0%, exento o no fiscal)
         iva_d = MontoDecimal("0.00")
+        base_d = redondear_moneda(total_d - ieps_d + ret_iva_d + ret_isr_d)
+        base_gravada_d = MontoDecimal("0.00")
+        if base_exenta_d == Decimal("0.00") and base_0_d == Decimal("0.00"):
+            base_exenta_d = base_d
 
     return {
         "TOTAL": total_d,
@@ -297,6 +323,11 @@ def construir_variables(
         "RET_IVA": ret_iva_d,
         "RET_ISR": ret_isr_d,
         "TIPO_CAMBIO": tipo_cambio_d,
+        "IEPS": ieps_d,
+        "BASE_GRAVADA": base_gravada_d,
+        "BASE_EXENTA": base_exenta_d,
+        "BASE_0": base_0_d,
+        "DESCUENTO": descuento_d,
     }
 
 def validar_formula(expresion: str) -> bool:
