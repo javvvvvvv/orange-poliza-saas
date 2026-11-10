@@ -18,7 +18,7 @@ using ContpaqiBridge.Models;
 
 namespace ContpaqiBridge.Services;
 
-public sealed class ContpaqiSdkService
+public sealed class ContpaqiSdkService : IDisposable
 {
     private readonly StaComDispatcher _dispatcher;
     private readonly IConfiguration _config;
@@ -33,18 +33,18 @@ public sealed class ContpaqiSdkService
         _log = log;
     }
 
-    public Task<bool> VerificarSdkDisponibleAsync() => _dispatcher.EjecutarAsync(() =>
+    public Task<bool> VerificarSdkDisponibleAsync()
     {
         try
         {
             var tipo = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkSesion");
-            return tipo is not null;
+            return Task.FromResult(tipo is not null);
         }
         catch
         {
-            return false;
+            return Task.FromResult(false);
         }
-    });
+    }
 
     private void AsegurarSesionIniciada()
     {
@@ -87,11 +87,27 @@ public sealed class ContpaqiSdkService
 
         if (_empresaAbiertaActual is not null)
         {
-            _sesion!.cierraEmpresa();
+            try
+            {
+                _sesion!.cierraEmpresa();
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Aviso al cerrar empresa previa {Empresa}", _empresaAbiertaActual);
+            }
+            _empresaAbiertaActual = null;
         }
 
         var resultado = _sesion!.abreEmpresa(nombreInternoEmpresa);
         _log.LogInformation("abreEmpresa({Empresa}) -> {Resultado}", nombreInternoEmpresa, (object)resultado);
+        if (resultado != 1)
+        {
+            _empresaAbiertaActual = null;
+            string msj = "";
+            try { msj = _sesion!.UltimoMsjError; } catch { }
+            throw new InvalidOperationException($"No se pudo abrir la empresa '{nombreInternoEmpresa}' en CONTPAQi (Código: {resultado}). {msj}");
+        }
+
         _empresaAbiertaActual = nombreInternoEmpresa;
     }
 
@@ -104,20 +120,27 @@ public sealed class ContpaqiSdkService
             ?? throw new InvalidOperationException("No se encontro SDKCONTPAQNG.TSdkListaEmpresas.");
         dynamic lista = Activator.CreateInstance(tipoListaEmpresas)!;
 
-        var resultado = new List<EmpresaDto>();
-        
-        _log.LogInformation("Llamando buscaPrimero");
-        int exito = lista.buscaPrimero();
-        if (exito == 1)
+        try
         {
-            do
+            var resultado = new List<EmpresaDto>();
+            
+            _log.LogInformation("Llamando buscaPrimero");
+            int exito = lista.buscaPrimero();
+            if (exito == 1)
             {
-                string nombre = lista.Nombre;
-                string baseDatos = lista.NombreBDD;
-                resultado.Add(new EmpresaDto(nombre, baseDatos));
-            } while (lista.buscaSiguiente() == 1);
+                do
+                {
+                    string nombre = ((string)lista.Nombre).Replace("\0", "").Trim();
+                    string baseDatos = ((string)lista.NombreBDD).Replace("\0", "").Trim();
+                    resultado.Add(new EmpresaDto(nombre, baseDatos));
+                } while (lista.buscaSiguiente() == 1);
+            }
+            return resultado;
         }
-        return resultado;
+        finally
+        {
+            try { Marshal.ReleaseComObject(lista); } catch { }
+        }
     });
 
     public Task<RespuestaBridge> CrearCuentaAsync(string nombreInternoEmpresa, CuentaDto cuenta) => _dispatcher.EjecutarAsync(() =>
@@ -125,21 +148,28 @@ public sealed class ContpaqiSdkService
         AsegurarEmpresaAbierta(nombreInternoEmpresa);
         var tipoCuenta = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkCuenta")!;
         dynamic cta = Activator.CreateInstance(tipoCuenta)!;
-        cta.setSesion(_sesion);
-        cta.iniciarInfo();
-        cta.Codigo = cuenta.Codigo;
-        cta.Nombre = cuenta.Nombre;
-        if (!string.IsNullOrEmpty(cuenta.AgrupadorSat))
+        try
         {
-            cta.AgrupadorSAT = cuenta.AgrupadorSat;
+            cta.setSesion(_sesion);
+            cta.iniciarInfo();
+            cta.Codigo = cuenta.Codigo;
+            cta.Nombre = cuenta.Nombre;
+            if (!string.IsNullOrEmpty(cuenta.AgrupadorSat))
+            {
+                cta.AgrupadorSAT = cuenta.AgrupadorSat;
+            }
+            int res = 0;
+            cta.crea(ref res);
+            if (res != 1)
+            {
+                return new RespuestaBridge(false, $"No se pudo crear la cuenta: {cta.UltimoMsjError}");
+            }
+            return new RespuestaBridge(true, "Cuenta creada exitosamente");
         }
-        int res = 0;
-        cta.crea(ref res);
-        if (res != 1)
+        finally
         {
-            return new RespuestaBridge(false, $"No se pudo crear la cuenta: {cta.UltimoMsjError}");
+            try { Marshal.ReleaseComObject(cta); } catch { }
         }
-        return new RespuestaBridge(true, "Cuenta creada exitosamente");
     });
 
     public Task<List<CuentaDto>> ListarCuentasAsync(string nombreInternoEmpresa) => _dispatcher.EjecutarAsync(() =>
@@ -148,43 +178,54 @@ public sealed class ContpaqiSdkService
 
         var tipoCuenta = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkCuenta")!;
         dynamic cuenta = Activator.CreateInstance(tipoCuenta)!;
-        cuenta.setSesion(_sesion);
 
-        var resultado = new List<CuentaDto>();
-        int exito = 0;
-        string? ultimoCodigo = null;
-        cuenta.consultaPorCodigo_buscaPrimero(ref exito);
-        if (exito == 1)
+        try
         {
-            do
+            cuenta.setSesion(_sesion);
+
+            var resultado = new List<CuentaDto>();
+            int exito = 0;
+            string? ultimoCodigo = null;
+            cuenta.consultaPorCodigo_buscaPrimero(ref exito);
+            if (exito == 1)
             {
-                try 
+                do
                 {
-                    string codigo = cuenta.Codigo;
-                    if (string.IsNullOrEmpty(codigo) || codigo == ultimoCodigo)
+                    try 
                     {
+                        string codigo = ((string)cuenta.Codigo).Replace("\0", "").Trim();
+                        if (string.IsNullOrEmpty(codigo) || codigo == ultimoCodigo)
+                        {
+                            break;
+                        }
+                        ultimoCodigo = codigo;
+                        string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
+                        string? agrupador = null;
+                        try { 
+                            string? rawAgr = (string?)cuenta.AgrupadorSAT;
+                            agrupador = string.IsNullOrWhiteSpace(rawAgr) ? null : rawAgr.Replace("\0", "").Trim();
+                        } catch (RuntimeBinderException) { /* opcional */ }
+                        
+                        if (codigo != "_CUADRE" && !codigo.StartsWith("_"))
+                        {
+                            resultado.Add(new CuentaDto(codigo, nombre, agrupador));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogWarning($"Error leyendo cuenta: {ex.Message}");
                         break;
                     }
-                    ultimoCodigo = codigo;
-                    string nombre = cuenta.Nombre;
-                    string? agrupador = null;
-                    try { agrupador = cuenta.AgrupadorSAT; } catch (RuntimeBinderException) { /* opcional */ }
-                    
-                    if (codigo != "_CUADRE" && !codigo.StartsWith("_"))
-                    {
-                        resultado.Add(new CuentaDto(codigo, nombre, agrupador));
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.LogWarning($"Error leyendo cuenta: {ex.Message}");
-                    break;
-                }
-                exito = 0;
-                cuenta.consultaPorCodigo_buscaSiguiente(ref exito);
-            } while (exito == 1);
+                    exito = 0;
+                    cuenta.consultaPorCodigo_buscaSiguiente(ref exito);
+                } while (exito == 1);
+            }
+            return resultado;
         }
-        return resultado;
+        finally
+        {
+            try { Marshal.ReleaseComObject(cuenta); } catch { }
+        }
     });
 
     public Task<RespuestaBridge> CrearPolizasAsync(string nombreInternoEmpresa, List<PolizaDto> polizas)
@@ -199,94 +240,112 @@ public sealed class ContpaqiSdkService
                 
                 Type tipoPoliza = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkPoliza")!;
                 Type tipoMov = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkMovimientoPoliza")!;
+                Type? tipoAsoc = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkAsocCFDI");
                 
                 int creadas = 0;
 
                 foreach (var p in polizas)
                 {
                     dynamic pol = Activator.CreateInstance(tipoPoliza)!;
-                    pol.setSesion(_sesion);
-                    
-                    if (DateTime.TryParse(p.Fecha, out DateTime parsedDate))
+                    try
                     {
-                        pol.Fecha = parsedDate.ToString("MM/dd/yyyy");
-                    }
-                    else
-                    {
-                        pol.Fecha = p.Fecha;
-                    }
-                    
-                    pol.Tipo = p.Tipo;
-                    pol.Numero = int.Parse(p.Numero);
-                    pol.Concepto = p.Concepto;
-                    
-                    int resCrea = pol.crea();
-                    if (resCrea != 0)
-                    {
-                        _log.LogError("Error al crear encabezado de póliza {Fecha} {Concepto}: {Error}", p.Fecha, p.Concepto, resCrea);
-                        continue;
-                    }
-
-                    foreach (var m in p.Movimientos)
-                    {
-                        dynamic mov = Activator.CreateInstance(tipoMov)!;
-                        mov.setSesion(_sesion);
+                        pol.setSesion(_sesion);
                         
-                        mov.CodigoCuenta = m.Cuenta;
-                        mov.TipoMovto = m.TipoMovto;
-                        mov.Importe = (double)m.Importe;
-                        mov.Concepto = string.IsNullOrEmpty(m.Concepto) ? p.Concepto : m.Concepto;
-                        mov.Referencia = m.Referencia ?? "";
-                        
-                        int resMov = pol.creaMovimiento(mov);
-                        if (resMov != 0)
+                        if (DateTime.TryParse(p.Fecha, out DateTime parsedDate))
                         {
-                            _log.LogError("Error al crear movimiento a cuenta {Cuenta} por {Importe}: {Error}", m.Cuenta, m.Importe, resMov);
+                            pol.Fecha = parsedDate.ToString("MM/dd/yyyy");
                         }
-                    }
-                    
-                    // Asociar CFDIs
-                    if (p.CfdiUuids != null && p.CfdiUuids.Count > 0)
-                    {
-                        try
+                        else
                         {
-                            Type tipoAsoc = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkAsocCFDI")!;
-                            dynamic asoc = Activator.CreateInstance(tipoAsoc)!;
-                            asoc.setSesion(_sesion);
-                            
-                            string guidPoliza = pol.Guid;
-                            asoc.GuidDocumento = guidPoliza;
-                            asoc.TipoAsoc = 1;
-                            
-                            foreach (var uuid in p.CfdiUuids)
+                            pol.Fecha = p.Fecha;
+                        }
+                        
+                        pol.Tipo = p.Tipo;
+                        pol.Numero = int.Parse(p.Numero);
+                        pol.Concepto = p.Concepto;
+                        
+                        int resCrea = pol.crea();
+                        if (resCrea != 0)
+                        {
+                            _log.LogError("Error al crear encabezado de póliza {Fecha} {Concepto}: {Error}", p.Fecha, p.Concepto, resCrea);
+                            continue;
+                        }
+
+                        foreach (var m in p.Movimientos)
+                        {
+                            dynamic mov = Activator.CreateInstance(tipoMov)!;
+                            try
                             {
-                                if (!string.IsNullOrWhiteSpace(uuid))
+                                mov.setSesion(_sesion);
+                                
+                                mov.CodigoCuenta = m.Cuenta;
+                                mov.TipoMovto = m.TipoMovto;
+                                mov.Importe = (double)m.Importe;
+                                mov.Concepto = string.IsNullOrEmpty(m.Concepto) ? p.Concepto : m.Concepto;
+                                mov.Referencia = m.Referencia ?? "";
+                                
+                                int resMov = pol.creaMovimiento(mov);
+                                if (resMov != 0)
                                 {
-                                    int resAsocAdd = asoc.agregaUUID(uuid);
-                                    if (resAsocAdd != 0)
-                                    {
-                                        _log.LogWarning("Error al hacer agregaUUID({Uuid}): {Res}", uuid, resAsocAdd);
-                                    }
+                                    _log.LogError("Error al crear movimiento a cuenta {Cuenta} por {Importe}: {Error}", m.Cuenta, m.Importe, resMov);
                                 }
                             }
-                            
-                            int resAsoc = asoc.crea();
-                            if (resAsoc != 0)
+                            finally
                             {
-                                _log.LogWarning("Error al finalizar asoc.crea() para la póliza: {Res}", resAsoc);
-                            }
-                            else
-                            {
-                                _log.LogInformation("CFDIs asociados exitosamente a la póliza {Guid}", guidPoliza);
+                                try { Marshal.ReleaseComObject(mov); } catch { }
                             }
                         }
-                        catch (Exception exCFDI)
+                        
+                        // Asociar CFDIs
+                        if (p.CfdiUuids != null && p.CfdiUuids.Count > 0 && tipoAsoc is not null)
                         {
-                            _log.LogError(exCFDI, "Excepción al intentar asociar CFDI a la póliza");
+                            dynamic asoc = Activator.CreateInstance(tipoAsoc)!;
+                            try
+                            {
+                                asoc.setSesion(_sesion);
+                                
+                                string guidPoliza = pol.Guid;
+                                asoc.GuidDocumento = guidPoliza;
+                                asoc.TipoAsoc = 1;
+                                
+                                foreach (var uuid in p.CfdiUuids)
+                                {
+                                    if (!string.IsNullOrWhiteSpace(uuid))
+                                    {
+                                        int resAsocAdd = asoc.agregaUUID(uuid);
+                                        if (resAsocAdd != 0)
+                                        {
+                                            _log.LogWarning("Error al hacer agregaUUID({Uuid}): {Res}", uuid, resAsocAdd);
+                                        }
+                                    }
+                                }
+                                
+                                int resAsoc = asoc.crea();
+                                if (resAsoc != 0)
+                                {
+                                    _log.LogWarning("Error al finalizar asoc.crea() para la póliza: {Res}", resAsoc);
+                                }
+                                else
+                                {
+                                    _log.LogInformation("CFDIs asociados exitosamente a la póliza {Guid}", guidPoliza);
+                                }
+                            }
+                            catch (Exception exCFDI)
+                            {
+                                _log.LogError(exCFDI, "Excepción al intentar asociar CFDI a la póliza");
+                            }
+                            finally
+                            {
+                                try { Marshal.ReleaseComObject(asoc); } catch { }
+                            }
                         }
-                    }
 
-                    creadas++;
+                        creadas++;
+                    }
+                    finally
+                    {
+                        try { Marshal.ReleaseComObject(pol); } catch { }
+                    }
                 }
 
                 return new RespuestaBridge(true, "Se inyectaron " + creadas + " pólizas exitosamente en CONTPAQi.");
@@ -297,5 +356,24 @@ public sealed class ContpaqiSdkService
                 return new RespuestaBridge(false, "Error desconocido: " + ex.Message);
             }
         });
+    }
+
+    public void Dispose()
+    {
+        if (_sesion is not null)
+        {
+            try
+            {
+                if (_empresaAbiertaActual is not null)
+                {
+                    _sesion.cierraEmpresa();
+                }
+                _sesion.finalizaConexion();
+                Marshal.ReleaseComObject(_sesion);
+            }
+            catch { }
+            _sesion = null;
+            _empresaAbiertaActual = null;
+        }
     }
 }

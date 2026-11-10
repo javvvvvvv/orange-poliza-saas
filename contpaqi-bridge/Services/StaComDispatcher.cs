@@ -51,9 +51,10 @@ public sealed class StaComDispatcher : IDisposable
         }
     }
 
-    /// <summary>Ejecuta una función en el hilo STA y regresa su resultado.</summary>
-    public Task<T> EjecutarAsync<T>(Func<T> funcion)
+    /// <summary>Ejecuta una función en el hilo STA y regresa su resultado con timeout de seguridad.</summary>
+    public async Task<T> EjecutarAsync<T>(Func<T> funcion, TimeSpan? timeout = null)
     {
+        var limite = timeout ?? TimeSpan.FromSeconds(300);
         var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
         _cola.Add(() =>
         {
@@ -66,7 +67,16 @@ public sealed class StaComDispatcher : IDisposable
                 tcs.SetException(ex);
             }
         });
-        return tcs.Task;
+
+        using var cts = new CancellationTokenSource(limite);
+        var completedTask = await Task.WhenAny(tcs.Task, Task.Delay(Timeout.Infinite, cts.Token));
+        if (completedTask == tcs.Task)
+        {
+            cts.Cancel();
+            return await tcs.Task;
+        }
+
+        throw new TimeoutException($"La operación en el SDK de CONTPAQi excedió el tiempo límite de {limite.TotalSeconds} segundos.");
     }
 
     public void Dispose()

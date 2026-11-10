@@ -194,7 +194,12 @@ def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa):
         # Insertar nuevas
         insert_data = []
         for c in cuentas:
-            insert_data.append((empresa_id, c["codigo"], c["nombre"], "", 1, c.get("agrupador_sat", "")))
+            _limp = lambda v: str(v).replace("\x00", "").strip() if v else ""
+            _cod = _limp(c.get("codigo"))
+            _nom = _limp(c.get("nombre"))
+            _agr = _limp(c.get("agrupadorSat") or c.get("agrupador_sat"))
+            if _cod and _cod != "_CUADRE" and not _cod.startswith("_"):
+                insert_data.append((empresa_id, _cod, _nom, "", 1, _agr))
             
         con.cursor().executemany(
             """INSERT INTO cuentas_catalogo (empresa_id, cuenta, descripcion, cuenta_padre, nivel, codigo_agrupador)

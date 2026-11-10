@@ -6,7 +6,7 @@ services:
     env_file:
       - .env.docker
     command: >
-      sh -c "python init_db.py && gunicorn --bind 0.0.0.0:8000 --workers 4 --timeout 120 app:app"
+      sh -c "python init_db.py && gunicorn --bind 0.0.0.0:8000 --workers 4 --timeout 300 app:app"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
