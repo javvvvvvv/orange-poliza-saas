@@ -6,7 +6,7 @@ services:
     env_file:
       - .env.docker
     command: >
-      sh -c "python init_db.py && gunicorn --bind 0.0.0.0:8000 --workers 4 --timeout 300 app:app"
+      sh -c "python init_db.py && gunicorn --bind 0.0.0.0:8000 --workers 4 --timeout 900 app:app"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -25,7 +25,7 @@ services:
       POSTGRES_PASSWORD: ${ORANGE_DB_PASSWORD:-change_me_in_env}
       POSTGRES_DB: ${ORANGE_DB_NAME:-orange_poliza}
     ports:
-      - "${ORANGE_DB_BIND_IP:-127.0.0.1}:5432:5432"
+      - "${ORANGE_DB_BIND_IP:-127.0.0.1}:5435:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped

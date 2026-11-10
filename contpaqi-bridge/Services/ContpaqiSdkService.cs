@@ -12,6 +12,8 @@
 // autorización expresa y por escrito del autor. Obra protegida conforme a la
 // Ley Federal del Derecho de Autor y tratados internacionales aplicables.
 // ============================================================================
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.CSharp.RuntimeBinder;
 using ContpaqiBridge.Models;
@@ -25,6 +27,11 @@ public sealed class ContpaqiSdkService : IDisposable
     private readonly ILogger<ContpaqiSdkService> _log;
     private dynamic? _sesion;
     private string? _empresaAbiertaActual;
+
+    private List<EmpresaDto>? _cacheEmpresas;
+    private DateTime _cacheEmpresasExpira = DateTime.MinValue;
+    private readonly ConcurrentDictionary<string, (List<CuentaDto> Cuentas, DateTime Expira)> _cacheCuentas = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Task<List<CuentaDto>>> _enVueloCuentas = new(StringComparer.OrdinalIgnoreCase);
 
     public ContpaqiSdkService(StaComDispatcher dispatcher, IConfiguration config, ILogger<ContpaqiSdkService> log)
     {
@@ -53,10 +60,12 @@ public sealed class ContpaqiSdkService : IDisposable
             var tipoSesion = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkSesion")
                 ?? throw new InvalidOperationException("No se encontró SDKCONTPAQNG.TSdkSesion.");
             _sesion = Activator.CreateInstance(tipoSesion)!;
+            _log.LogInformation("Llamando iniciaConexion()...");
             _sesion.iniciaConexion();
 
             string usuario = _config["Contpaqi:Usuario"] ?? "";
             string contrasena = _config["Contpaqi:Contrasena"] ?? "";
+            _log.LogInformation("Llamando firmaUsuarioParams({Usuario})...", usuario);
             if (!string.IsNullOrEmpty(usuario))
             {
                 _sesion.firmaUsuarioParams((string)usuario, (string)contrasena);
@@ -111,37 +120,55 @@ public sealed class ContpaqiSdkService : IDisposable
         _empresaAbiertaActual = nombreInternoEmpresa;
     }
 
-    public Task<List<EmpresaDto>> ListarEmpresasAsync() => _dispatcher.EjecutarAsync(() =>
+    public Task<List<EmpresaDto>> ListarEmpresasAsync()
     {
-        AsegurarSesionIniciada();
-        
-        _log.LogInformation("Instanciando TSdkListaEmpresas");
-        var tipoListaEmpresas = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkListaEmpresas")
-            ?? throw new InvalidOperationException("No se encontro SDKCONTPAQNG.TSdkListaEmpresas.");
-        dynamic lista = Activator.CreateInstance(tipoListaEmpresas)!;
+        if (_cacheEmpresas is not null && DateTime.UtcNow < _cacheEmpresasExpira && _cacheEmpresas.Count > 0)
+        {
+            return Task.FromResult(_cacheEmpresas);
+        }
 
-        try
+        return _dispatcher.EjecutarAsync(() =>
         {
-            var resultado = new List<EmpresaDto>();
-            
-            _log.LogInformation("Llamando buscaPrimero");
-            int exito = lista.buscaPrimero();
-            if (exito == 1)
+            if (_cacheEmpresas is not null && DateTime.UtcNow < _cacheEmpresasExpira && _cacheEmpresas.Count > 0)
             {
-                do
-                {
-                    string nombre = ((string)lista.Nombre).Replace("\0", "").Trim();
-                    string baseDatos = ((string)lista.NombreBDD).Replace("\0", "").Trim();
-                    resultado.Add(new EmpresaDto(nombre, baseDatos));
-                } while (lista.buscaSiguiente() == 1);
+                return _cacheEmpresas;
             }
-            return resultado;
-        }
-        finally
-        {
-            try { Marshal.ReleaseComObject(lista); } catch { }
-        }
-    });
+
+            AsegurarSesionIniciada();
+            
+            _log.LogInformation("Instanciando TSdkListaEmpresas");
+            var tipoListaEmpresas = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkListaEmpresas")
+                ?? throw new InvalidOperationException("No se encontro SDKCONTPAQNG.TSdkListaEmpresas.");
+            dynamic lista = Activator.CreateInstance(tipoListaEmpresas)!;
+
+            try
+            {
+                var resultado = new List<EmpresaDto>();
+                
+                _log.LogInformation("Llamando buscaPrimero");
+                int exito = lista.buscaPrimero();
+                if (exito == 1)
+                {
+                    do
+                    {
+                        string nombre = ((string)lista.Nombre).Replace("\0", "").Trim();
+                        string baseDatos = ((string)lista.NombreBDD).Replace("\0", "").Trim();
+                        resultado.Add(new EmpresaDto(nombre, baseDatos));
+                    } while (lista.buscaSiguiente() == 1);
+                }
+                if (resultado.Count > 0)
+                {
+                    _cacheEmpresas = resultado;
+                    _cacheEmpresasExpira = DateTime.UtcNow.AddMinutes(5);
+                }
+                return resultado;
+            }
+            finally
+            {
+                try { Marshal.ReleaseComObject(lista); } catch { }
+            }
+        });
+    }
 
     public Task<RespuestaBridge> CrearCuentaAsync(string nombreInternoEmpresa, CuentaDto cuenta) => _dispatcher.EjecutarAsync(() =>
     {
@@ -164,6 +191,7 @@ public sealed class ContpaqiSdkService : IDisposable
             {
                 return new RespuestaBridge(false, $"No se pudo crear la cuenta: {cta.UltimoMsjError}");
             }
+            _cacheCuentas.TryRemove(nombreInternoEmpresa, out _);
             return new RespuestaBridge(true, "Cuenta creada exitosamente");
         }
         finally
@@ -172,61 +200,91 @@ public sealed class ContpaqiSdkService : IDisposable
         }
     });
 
-    public Task<List<CuentaDto>> ListarCuentasAsync(string nombreInternoEmpresa) => _dispatcher.EjecutarAsync(() =>
+    public async Task<List<CuentaDto>> ListarCuentasAsync(string nombreInternoEmpresa)
     {
-        AsegurarEmpresaAbierta(nombreInternoEmpresa);
+        if (_cacheCuentas.TryGetValue(nombreInternoEmpresa, out var entrada) && DateTime.UtcNow < entrada.Expira && entrada.Cuentas.Count > 0)
+        {
+            _log.LogInformation("Retornando {N} cuentas en caché para {Empresa}", entrada.Cuentas.Count, nombreInternoEmpresa);
+            return entrada.Cuentas;
+        }
 
-        var tipoCuenta = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkCuenta")!;
-        dynamic cuenta = Activator.CreateInstance(tipoCuenta)!;
+        var tarea = _enVueloCuentas.GetOrAdd(nombreInternoEmpresa, emp => _dispatcher.EjecutarAsync(() =>
+        {
+            if (_cacheCuentas.TryGetValue(emp, out var cacheHit) && DateTime.UtcNow < cacheHit.Expira && cacheHit.Cuentas.Count > 0)
+            {
+                return cacheHit.Cuentas;
+            }
+
+            var sw = Stopwatch.StartNew();
+            AsegurarEmpresaAbierta(emp);
+
+            var tipoCuenta = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkCuenta")!;
+            dynamic cuenta = Activator.CreateInstance(tipoCuenta)!;
+
+            try
+            {
+                cuenta.setSesion(_sesion);
+
+                var resultado = new List<CuentaDto>();
+                int exito = 0;
+                string? ultimoCodigo = null;
+                _log.LogInformation("Iniciando lectura de cuentas para {Empresa}...", emp);
+                cuenta.consultaPorCodigo_buscaPrimero(ref exito);
+                if (exito == 1)
+                {
+                    do
+                    {
+                        try 
+                        {
+                            string codigo = ((string)cuenta.Codigo).Replace("\0", "").Trim();
+                            if (string.IsNullOrEmpty(codigo) || codigo == ultimoCodigo)
+                            {
+                                break;
+                            }
+                            ultimoCodigo = codigo;
+                            string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
+                            
+                            if (codigo != "_CUADRE" && !codigo.StartsWith("_"))
+                            {
+                                resultado.Add(new CuentaDto(codigo, nombre, null));
+                                if (resultado.Count % 100 == 0)
+                                {
+                                    _log.LogInformation("Leídas {N} cuentas de {Empresa} en {Seg:F1}s (última: {Cod})", resultado.Count, emp, sw.Elapsed.TotalSeconds, codigo);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.LogWarning("Error leyendo cuenta en {Empresa}: {Msg}", emp, ex.Message);
+                            break;
+                        }
+                        exito = 0;
+                        cuenta.consultaPorCodigo_buscaSiguiente(ref exito);
+                    } while (exito == 1);
+                }
+                sw.Stop();
+                _log.LogInformation("Lectura finalizada para {Empresa}: {N} cuentas en {Seg:F1}s", emp, resultado.Count, sw.Elapsed.TotalSeconds);
+                if (resultado.Count > 0)
+                {
+                    _cacheCuentas[emp] = (resultado, DateTime.UtcNow.AddMinutes(10));
+                }
+                return resultado;
+            }
+            finally
+            {
+                try { Marshal.ReleaseComObject(cuenta); } catch { }
+            }
+        }, TimeSpan.FromSeconds(900)));
 
         try
         {
-            cuenta.setSesion(_sesion);
-
-            var resultado = new List<CuentaDto>();
-            int exito = 0;
-            string? ultimoCodigo = null;
-            cuenta.consultaPorCodigo_buscaPrimero(ref exito);
-            if (exito == 1)
-            {
-                do
-                {
-                    try 
-                    {
-                        string codigo = ((string)cuenta.Codigo).Replace("\0", "").Trim();
-                        if (string.IsNullOrEmpty(codigo) || codigo == ultimoCodigo)
-                        {
-                            break;
-                        }
-                        ultimoCodigo = codigo;
-                        string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
-                        string? agrupador = null;
-                        try { 
-                            string? rawAgr = (string?)cuenta.AgrupadorSAT;
-                            agrupador = string.IsNullOrWhiteSpace(rawAgr) ? null : rawAgr.Replace("\0", "").Trim();
-                        } catch (RuntimeBinderException) { /* opcional */ }
-                        
-                        if (codigo != "_CUADRE" && !codigo.StartsWith("_"))
-                        {
-                            resultado.Add(new CuentaDto(codigo, nombre, agrupador));
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.LogWarning($"Error leyendo cuenta: {ex.Message}");
-                        break;
-                    }
-                    exito = 0;
-                    cuenta.consultaPorCodigo_buscaSiguiente(ref exito);
-                } while (exito == 1);
-            }
-            return resultado;
+            return await tarea;
         }
         finally
         {
-            try { Marshal.ReleaseComObject(cuenta); } catch { }
+            _enVueloCuentas.TryRemove(nombreInternoEmpresa, out _);
         }
-    });
+    }
 
     public Task<RespuestaBridge> CrearPolizasAsync(string nombreInternoEmpresa, List<PolizaDto> polizas)
     {

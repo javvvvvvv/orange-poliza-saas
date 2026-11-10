@@ -83,7 +83,7 @@ def _inferir_jerarquia(filas):
             # Ej: 100-00-000 es nivel 1. 100-01-000 es nivel 2. 100-01-001 es nivel 3.
             nivel_real = 0
             for p in partes:
-                if int(p) != 0:
+                if p.strip().strip('0') != '':
                     nivel_real += 1
             
             nivel = max(1, nivel_real)
@@ -126,6 +126,7 @@ def _inferir_jerarquia(filas):
         resultado.append((cuenta_str, desc, padre, nivel))
         
     return resultado
+
 
 def _guardar(empresa_id, filas):
     filas_con_jerarquia = _inferir_jerarquia(filas)
@@ -191,24 +192,35 @@ def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa):
         # Eliminar anteriores
         con.execute("DELETE FROM cuentas_catalogo WHERE empresa_id = ?", (empresa_id,))
         
-        # Insertar nuevas
-        insert_data = []
+        limpias = {}
+        agrupadores = {}
         for c in cuentas:
             _limp = lambda v: str(v).replace("\x00", "").strip() if v else ""
             _cod = _limp(c.get("codigo"))
             _nom = _limp(c.get("nombre"))
             _agr = _limp(c.get("agrupadorSat") or c.get("agrupador_sat"))
             if _cod and _cod != "_CUADRE" and not _cod.startswith("_"):
-                insert_data.append((empresa_id, _cod, _nom, "", 1, _agr))
+                limpias[_cod] = _nom
+                agrupadores[_cod] = _agr
+
+        filas_jerarquia = _inferir_jerarquia(list(limpias.items()))
+        insert_data = [
+            (empresa_id, cod, nom, padre or "", nivel, agrupadores.get(cod, ""))
+            for cod, nom, padre, nivel in filas_jerarquia
+        ]
             
         con.cursor().executemany(
             """INSERT INTO cuentas_catalogo (empresa_id, cuenta, descripcion, cuenta_padre, nivel, codigo_agrupador)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(empresa_id, cuenta) DO UPDATE SET
+                  descripcion = excluded.descripcion,
+                  cuenta_padre = excluded.cuenta_padre,
+                  nivel = excluded.nivel,
+                  codigo_agrupador = excluded.codigo_agrupador""",
             insert_data
         )
         con.commit()
         con.close()
-        return len(cuentas)
+        return len(insert_data)
     except Exception as e:
         raise Exception(f"No se pudo sincronizar con CONTPAQi: {str(e)}")
-

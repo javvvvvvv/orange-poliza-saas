@@ -33,7 +33,7 @@ from typing import Any
 import requests
 
 _URL_BASE = os.environ.get("CONTPAQI_BRIDGE_URL", "http://host.docker.internal:5005").rstrip("/")
-_TIMEOUT_SEGUNDOS = float(os.environ.get("CONTPAQI_BRIDGE_TIMEOUT", "300"))
+_TIMEOUT_SEGUNDOS = float(os.environ.get("CONTPAQI_BRIDGE_TIMEOUT", "900"))
 _REINTENTOS = int(os.environ.get("CONTPAQI_BRIDGE_REINTENTOS", "2"))
 _ESPERA_ENTRE_REINTENTOS = 1.5
 _API_KEY = os.environ.get("CONTPAQI_BRIDGE_API_KEY", "orange_bridge_secret_2026").strip()
@@ -67,6 +67,8 @@ def _get_con_reintentos(ruta: str, timeout: float | None = None, reintentos: int
             return resp.json()
         except requests.RequestException as e:
             ultimo_error = e
+            if isinstance(e, requests.ReadTimeout):
+                break
             if intento < r:
                 time.sleep(_ESPERA_ENTRE_REINTENTOS)
 
@@ -75,31 +77,40 @@ def _get_con_reintentos(ruta: str, timeout: float | None = None, reintentos: int
         f"(¿está corriendo iniciar_puente_contpaqi.bat?): {ultimo_error}"
     )
 
-def _post_con_reintentos(ruta: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _post_con_reintentos(
+    ruta: str,
+    payload: dict[str, Any],
+    timeout: float | None = None,
+    reintentos: int | None = None,
+) -> dict[str, Any]:
+    t = timeout if timeout is not None else _TIMEOUT_SEGUNDOS
+    r = reintentos if reintentos is not None else _REINTENTOS
     ultimo_error: Exception | None = None
-    for intento in range(_REINTENTOS + 1):
+    for intento in range(r + 1):
         try:
-            resp = requests.post(f"{_URL_BASE}{ruta}", json=payload, headers=_headers(), timeout=_TIMEOUT_SEGUNDOS)
+            resp = requests.post(f"{_URL_BASE}{ruta}", json=payload, headers=_headers(), timeout=t)
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as e:
             ultimo_error = e
-            if intento < _REINTENTOS:
+            if isinstance(e, requests.ReadTimeout):
+                break
+            if intento < r:
                 time.sleep(_ESPERA_ENTRE_REINTENTOS)
 
     raise ErrorBridgeContpaqi(
-        f"No se pudo conectar al puente en {_URL_BASE} tras {_REINTENTOS + 1} intento(s) "
+        f"No se pudo conectar al puente en {_URL_BASE} tras {r + 1} intento(s) "
         f"(¿está corriendo iniciar_puente_contpaqi.bat?): {ultimo_error}"
     )
 
 def exportar_polizas(payload: dict[str, Any]) -> dict[str, Any]:
-    return _post_con_reintentos("/", payload)
+    return _post_con_reintentos("/", payload, timeout=600.0, reintentos=1)
 
 def listar_cuentas(payload: dict[str, Any]) -> dict[str, Any]:
-    return _post_con_reintentos("/cuentas/listar", payload)
+    return _post_con_reintentos("/cuentas/listar", payload, timeout=900.0, reintentos=1)
 
 def listar_empresas() -> dict[str, Any]:
-    return _get_con_reintentos('/empresas/listar', timeout=20.0, reintentos=0)
+    return _get_con_reintentos('/empresas/listar', timeout=30.0, reintentos=0)
 
 def crear_cuenta(payload: dict[str, Any]) -> dict[str, Any]:
-    return _post_con_reintentos('/cuentas/crear', payload)
+    return _post_con_reintentos('/cuentas/crear', payload, timeout=60.0, reintentos=1)

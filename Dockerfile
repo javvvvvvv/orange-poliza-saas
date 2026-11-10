@@ -41,4 +41,4 @@ EXPOSE 8000
 
 # Script de inicio (ejecuta Gunicorn desde /app/webapp)
 WORKDIR /app/webapp
-CMD ["sh", "-c", "python init_db.py && gunicorn --bind 0.0.0.0:8000 --workers 4 --timeout 300 app:app"]
+CMD ["sh", "-c", "python init_db.py && gunicorn --bind 0.0.0.0:8000 --workers 4 --timeout 900 app:app"]
