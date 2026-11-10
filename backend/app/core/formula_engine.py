@@ -278,41 +278,39 @@ def construir_variables(
     base_0_d = redondear_moneda(base_0)
     descuento_d = redondear_moneda(descuento)
 
-    if tiene_iva:
-        if iva_exacto is not None:
-            # Caso con CFDI o desglose de IVA exacto conocido
-            iva_d = redondear_moneda(iva_exacto)
-            if base_gravada is not None:
-                base_gravada_d = redondear_moneda(base_gravada)
-                base_d = redondear_moneda(base_gravada_d + base_exenta_d + base_0_d)
-            else:
-                # Deducción matemática exacta de BASE por identidad contable
-                base_d = redondear_moneda(total_d - iva_d - ieps_d + ret_iva_d + ret_isr_d)
-                base_gravada_d = redondear_moneda(base_d - base_exenta_d - base_0_d)
-                if base_gravada_d < Decimal("0.00"):
-                    base_gravada_d = base_d
-        else:
-            # Caso estimado sin CFDI
-            divisor = Decimal("1") + tasa_iva_d - tasa_ret_iva_d - tasa_ret_isr_d
-            tiene_tasas_ret = (tasa_ret_iva_d > 0 or tasa_ret_isr_d > 0)
-            base_d = redondear_moneda(total_d / divisor) if divisor != 0 else total_d
-            if ret_iva_d == Decimal("0.00") and tasa_ret_iva_d > 0:
-                ret_iva_d = redondear_moneda(base_d * tasa_ret_iva_d)
-            if ret_isr_d == Decimal("0.00") and tasa_ret_isr_d > 0:
-                ret_isr_d = redondear_moneda(base_d * tasa_ret_isr_d)
-            # IVA residual para cuadre perfecto a centavo
-            if tiene_tasas_ret:
-                iva_d = redondear_moneda(total_d - base_d - ieps_d + ret_iva_d + ret_isr_d)
-            else:
-                iva_d = redondear_moneda(total_d - base_d - ieps_d)
-            base_gravada_d = base_d
-    else:
-        # Movimiento sin IVA (tasa 0%, exento o no fiscal)
-        iva_d = MontoDecimal("0.00")
+    if not tiene_iva:
         base_d = redondear_moneda(total_d - ieps_d + ret_iva_d + ret_isr_d)
+        iva_d = MontoDecimal("0.00")
         base_gravada_d = MontoDecimal("0.00")
         if base_exenta_d == Decimal("0.00") and base_0_d == Decimal("0.00"):
             base_exenta_d = base_d
+    elif iva_exacto is not None:
+        iva_d = redondear_moneda(iva_exacto)
+        if base_gravada is not None:
+            base_gravada_d = redondear_moneda(base_gravada)
+            base_d = redondear_moneda(base_gravada_d + base_exenta_d + base_0_d)
+        else:
+            base_d = redondear_moneda(total_d - iva_d - ieps_d + ret_iva_d + ret_isr_d)
+            base_gravada_d = redondear_moneda(base_d - base_exenta_d - base_0_d)
+            if base_gravada_d < Decimal("0.00"):
+                base_gravada_d = base_d
+    else:
+        if ret_iva_d > 0 or ret_isr_d > 0:
+            base_d = redondear_moneda((total_d - ieps_d + ret_iva_d + ret_isr_d) / (1 + tasa_iva_d))
+        else:
+            divisor = 1 + tasa_iva_d - tasa_ret_iva_d - tasa_ret_isr_d
+            if divisor <= 0:
+                raise FormulaError("Las tasas de IVA y retención de la empresa no son válidas.")
+            base_d = redondear_moneda((total_d - ieps_d) / divisor)
+            ret_iva_d = redondear_moneda(base_d * tasa_ret_iva_d)
+            ret_isr_d = redondear_moneda(base_d * tasa_ret_isr_d)
+        iva_d = redondear_moneda(total_d - base_d - ieps_d + ret_iva_d + ret_isr_d)
+        base_gravada_d = base_d
+
+    if base_d < 0 or iva_d < 0:
+        raise FormulaError(
+            f"El desglose fiscal no es posible: BASE={base_d}, IVA={iva_d} para un total de {total_d}."
+        )
 
     return {
         "TOTAL": total_d,

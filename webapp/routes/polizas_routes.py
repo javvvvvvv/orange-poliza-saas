@@ -106,7 +106,11 @@ def polizas_exportar(empresa_id):
     nombre_archivo = f"polizas_{empresa['nombre'].replace(' ', '_')}"
     ruta_salida = os.path.join(tempfile.gettempdir(), nombre_archivo)
 
-    resultado = movimientos_repo.exportar_polizas(empresa_id, ruta_salida)
+    try:
+        resultado = movimientos_repo.exportar_polizas(empresa_id, ruta_salida)
+    except (movimientos_repo.SinPolizasPorExportarError, movimientos_repo.BancoSinCuentaContableError) as e:
+        flash(str(e), "error")
+        return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
 
     if "xlsx" in resultado["formato"]:
         flash(f"Se exportó en .xlsx en vez de .xls: {resultado['formato']}", "error")
@@ -323,12 +327,20 @@ def exportar_polizas_sdk(empresa_id):
         con.close()
         return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
 
-    polizas = con.execute("""
+    reexportar = request.args.get("reexportar", "0") == "1"
+    filtro_envio = "" if reexportar else " AND p.enviada_contpaqi = 0"
+    polizas = con.execute(f"""
         SELECT p.*, m.id AS mov_id, COALESCE(p.concepto, m.descripcion) AS concepto 
         FROM polizas p 
         LEFT JOIN movimientos m ON m.poliza_id = p.id 
-        WHERE p.empresa_id = ? ORDER BY p.tipo, p.numero
+        WHERE p.empresa_id = ? AND p.cuadrada = 1{filtro_envio} ORDER BY p.tipo, p.numero
     """, (empresa_id,)).fetchall()
+
+    if not polizas:
+        flash("No hay pólizas cuadradas pendientes de exportar.", "info")
+        con.close()
+        return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
+
     movimientos_poliza = _construir_movimientos_contpaqi(con, polizas)
     con.close()
 
@@ -427,8 +439,12 @@ def polizas_limpiar(empresa_id):
 @empresa_requerida
 @csrf_protect
 def movimientos_limpiar(empresa_id):
-    movimientos_repo.limpiar_movimientos(empresa_id)
-    flash("Se han eliminado todos los movimientos, pólizas y documentos de la empresa. Lista para una carga nueva.", "exito")
+    forzar = request.form.get("forzar") == "1"
+    try:
+        movimientos_repo.limpiar_movimientos(empresa_id, forzar=forzar)
+        flash("Se han eliminado los movimientos y pólizas pendientes. Lista para una carga nueva.", "exito")
+    except movimientos_repo.PolizasYaEnviadasError as e:
+        flash(str(e), "error")
     return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
 
 @polizas_bp.route("/empresas/<int:empresa_id>/polizas/<int:poliza_id>/editar", methods=["POST"])

@@ -34,19 +34,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app", "core"))
 
 from formula_engine import evaluar_formula, FormulaError, construir_variables  # noqa: E402
 
-VARIABLES = construir_variables(total=11600, tasa_iva=0.16, tiene_iva=True,
+VARIABLES = construir_variables(total=11300, tasa_iva=0.16, tiene_iva=True,
                                  ret_iva=100, ret_isr=200, tipo_cambio=17.5)
 
 CASOS_VALIDOS = [
-    ("TOTAL", 11600.0),
-    ("TOTAL / 1.16", 10000.0),
-    ("TOTAL * 0.16 / 1.16", 1600.0),
+    ("TOTAL", 11300.0),
+    ("TOTAL / 1.16", 9741.38),
     ("BASE", 10000.0),
     ("IVA", 1600.0),
-    ("TOTAL - RET_IVA - RET_ISR", 11300.0),
-    ("(TOTAL / 1.16) * 0.16", 1600.0),
-    ("round(TOTAL / 3, 2)", 3866.67),
-    ("TOTAL * TIPO_CAMBIO", 203000.0),
+    ("BASE + IVA - RET_IVA - RET_ISR", 11300.0),
+    ("round(TOTAL / 3, 2)", 3766.67),
+    ("TOTAL * TIPO_CAMBIO", 197750.0),
     ("-RET_IVA", -100.0),
 ]
 

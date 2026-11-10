@@ -261,7 +261,13 @@ def importar_confirmar(empresa_id):
         con.commit()
         con.close()
 
-        movimientos_repo.insertar_movimientos(empresa_id, documento_id, resultado["movimientos"])
+        ids_insertados = movimientos_repo.insertar_movimientos(empresa_id, documento_id, resultado["movimientos"])
+        total_duplicados = getattr(ids_insertados, "duplicados", 0)
+        try:
+            from asociacion_repo import asociar_automaticamente
+            asociar_automaticamente(empresa_id)
+        except Exception:
+            pass
         try:
             cfdi_repo.conciliar_existentes(empresa_id)
         except Exception:
@@ -276,8 +282,9 @@ def importar_confirmar(empresa_id):
     carpeta_temporal = os.path.join(UPLOADS_DIR, "_tmp", token)
     shutil.rmtree(carpeta_temporal, ignore_errors=True)
 
+    msg_dup = f" ({total_duplicados} omitidos por ya existir)" if total_duplicados > 0 else ""
     flash(
-        f"{total_importados} movimientos importados. {total_automaticos} clasificados "
+        f"{total_importados} movimientos procesados{msg_dup}. {total_automaticos} clasificados "
         f"automáticamente, {total_pendientes} pendientes de revisión.",
         "exito",
     )

@@ -334,6 +334,11 @@ def pendiente_asignar_rapido(empresa_id, movimiento_id):
         kwargs["palabras_clave"] = [sugerencia.valor_coincidencia]
 
     repo.crear_regla(**kwargs)
+    try:
+        from asociacion_repo import asociar_automaticamente
+        asociar_automaticamente(empresa_id)
+    except Exception:
+        pass
     resultado = movimientos_repo.clasificar_pendientes(empresa_id)
 
     flash(
@@ -434,6 +439,11 @@ def pendiente_crear_regla(empresa_id, movimiento_id):
         kwargs["palabras_clave"] = [valor_coincidencia]
 
     repo.crear_regla(**kwargs)
+    try:
+        from asociacion_repo import asociar_automaticamente
+        asociar_automaticamente(empresa_id)
+    except Exception:
+        pass
     resultado = movimientos_repo.clasificar_pendientes(empresa_id)
 
     flash("Regla creada y aplicada a los movimientos pendientes.", "exito")
