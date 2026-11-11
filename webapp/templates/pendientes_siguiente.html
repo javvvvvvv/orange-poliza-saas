@@ -48,6 +48,53 @@
     <div class="text-2xl font-semibold text-marino-900">${{ "%.2f"|format(movimiento.total) }}</div>
   </div>
 
+  {% if movimiento.es_anticipo or poliza_aplicacion %}
+  <!-- BANNER DE ANTICIPO (FACTURA DE MES POSTERIOR) -->
+  <div class="bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-400 rounded-xl p-4 mb-4 text-sm shadow-sm">
+    <div class="flex items-center justify-between pb-2 mb-2 border-b border-amber-200">
+      <div class="flex items-center gap-2 font-bold text-amber-900 text-sm">
+        <span class="text-lg">⚡</span> Pólizas de Anticipo Generadas Automáticamente
+      </div>
+      <span class="px-2.5 py-0.5 bg-amber-600 text-white font-bold text-xs rounded-full shadow-sm">Anticipo</span>
+    </div>
+    <p class="text-xs text-amber-800 mb-3">
+      El movimiento bancario es de <strong>{{ movimiento.fecha }}</strong> y la factura vinculada corresponde a un mes posterior. Se generaron en simultáneo las 2 pólizas contables cuadradas:
+    </p>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs mb-3">
+      <div class="bg-white/90 p-3 rounded-lg border border-amber-300 shadow-xs">
+        <div class="font-bold text-amber-950 mb-1 flex items-center justify-between">
+          <span>1. Póliza de {{ 'Ingreso' if movimiento.tipo == 'ingreso' else 'Egreso' }} (Anticipo)</span>
+          <span class="text-amber-700 font-mono text-[11px]">{{ poliza_anticipo.fecha if poliza_anticipo else movimiento.fecha }}</span>
+        </div>
+        <div class="text-[11px] text-slate-600">
+          Afecta Banco y Subcuenta de Anticipo de {{ 'Clientes' if movimiento.tipo == 'ingreso' else 'Proveedores' }}.
+          {% if poliza_anticipo %}
+          <div class="mt-1 text-slate-800 font-semibold font-mono">Póliza: #{{ poliza_anticipo.numero }} · {{ poliza_anticipo.tipo }}</div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="bg-white/90 p-3 rounded-lg border border-amber-300 shadow-xs">
+        <div class="font-bold text-amber-950 mb-1 flex items-center justify-between">
+          <span>2. Póliza de Diario (Aplicación)</span>
+          <span class="text-amber-700 font-mono text-[11px]">{{ poliza_aplicacion.fecha if poliza_aplicacion else '1er día mes factura' }}</span>
+        </div>
+        <div class="text-[11px] text-slate-600">
+          Cancela Anticipo y reconoce la cuenta del {{ 'cliente' if movimiento.tipo == 'ingreso' else 'proveedor' }} con su IVA fiscal.
+          {% if poliza_aplicacion %}
+          <div class="mt-1 text-slate-800 font-semibold font-mono">Póliza: #{{ poliza_aplicacion.numero }} · Diario</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="flex items-center justify-between pt-2 border-t border-amber-200 text-xs">
+      <span class="text-amber-900 font-medium">✓ Las dos pólizas se encuentran creadas y cuadradas en el sistema.</span>
+      <a href="/empresas/{{ request.view_args.empresa_id }}/pendientes" class="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded text-xs shadow-sm">
+        Siguiente Movimiento Pendiente →
+      </a>
+    </div>
+  </div>
+  {% endif %}
+
   {% if cfdis_asociados %}
   <div class="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 mb-4 text-sm shadow-sm">
     <div class="flex justify-between items-start mb-2 border-b border-emerald-100 pb-2">
@@ -325,6 +372,13 @@
       </button>
     </div>
 
+    <div id="modal-asoc-anticipo-banner" class="hidden mx-4 mt-3 p-3 bg-amber-100 border border-amber-300 rounded-lg text-amber-900 text-xs shadow-xs">
+      <div class="font-bold flex items-center gap-1.5 mb-0.5">
+        <span class="text-amber-700 font-bold">⚡</span> Factura de Mes Posterior Detectada (Anticipo Automático)
+      </div>
+      <div>Has seleccionado una factura de un mes posterior a la fecha del movimiento. El sistema generará automáticamente la <strong>Póliza de Anticipo</strong> en la fecha del movimiento y la <strong>Póliza de Diario de Aplicación</strong> el 1er día del mes de la factura.</div>
+    </div>
+
     <div class="flex-1 overflow-y-auto p-4 space-y-2" id="modal-asoc-contenedor">
       <div class="text-center py-6 text-slate-400 text-xs">Cargando facturas XML disponibles...</div>
     </div>
@@ -348,6 +402,7 @@
 <script>
 const empresaId = {{ request.view_args.empresa_id }};
 const movimientoId = {{ movimiento.id }};
+const movFecha = "{{ movimiento.fecha }}";
 const csrfToken = "{{ csrf_token() }}";
 let debounceTimer = null;
 
@@ -386,16 +441,19 @@ async function cargarCfdisDirecto() {
 
         let html = '';
         data.cfdis.forEach(c => {
+            const cFecha = (c.fecha || '').trim();
+            const esPosterior = cFecha && movFecha && (cFecha.substring(0, 7) > movFecha.substring(0, 7));
             html += `
-            <div class="p-3 rounded-lg border ${c.ya_asociado ? 'bg-emerald-50/70 border-emerald-300' : 'bg-white border-slate-200'} hover:border-orange-300 transition-colors flex items-center justify-between gap-3">
+            <div class="p-3 rounded-lg border ${c.ya_asociado ? 'bg-emerald-50/70 border-emerald-300' : (esPosterior ? 'bg-amber-50/70 border-amber-300' : 'bg-white border-slate-200')} hover:border-orange-300 transition-colors flex items-center justify-between gap-3">
               <div class="flex items-center gap-3">
-                <input type="checkbox" value="${c.id}" data-rfc="${c.contraparte_rfc || ''}" data-nombre="${c.contraparte_nombre || ''}"
+                <input type="checkbox" value="${c.id}" data-rfc="${c.contraparte_rfc || ''}" data-nombre="${c.contraparte_nombre || ''}" data-fecha="${cFecha}"
                        class="cfdi-chk w-4 h-4 text-orange-600 rounded" ${c.ya_asociado ? 'checked' : ''} onchange="onCfdiChkChanged(this)">
                 <div>
                   <div class="font-bold text-slate-900 flex items-center gap-2">
                     <span class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">${c.serie}${c.folio || 'S/F'}</span>
                     <span class="text-slate-600 font-medium text-[11px]">${c.contraparte_nombre || c.contraparte_rfc}</span>
                     ${c.ya_asociado ? '<span class="text-[10px] bg-emerald-600 text-white font-bold px-1.5 py-0.2 rounded">YA ASOCIADA</span>' : ''}
+                    ${esPosterior ? '<span class="text-[10px] bg-amber-600 text-white font-bold px-1.5 py-0.2 rounded">⚡ MES POSTERIOR (ANTICIPO)</span>' : ''}
                   </div>
                   <div class="text-[11px] text-slate-500 font-mono mt-0.5">
                     Fecha: ${c.fecha} · UUID: ${c.uuid.substring(0, 13)}… · RFC: ${c.contraparte_rfc}
@@ -441,6 +499,24 @@ async function sugerirContraCuentaModal(rfc, nombre) {
 function actualizarContadorDirecto() {
     const chks = document.querySelectorAll('.cfdi-chk:checked');
     document.getElementById('modal-asoc-contador').innerText = `${chks.length} factura(s) seleccionada(s)`;
+
+    // Detectar si alguna factura seleccionada es de mes posterior
+    let hayMesPosterior = false;
+    chks.forEach(chk => {
+        const f = (chk.getAttribute('data-fecha') || '').trim();
+        if (f && movFecha && f.substring(0, 7) > movFecha.substring(0, 7)) {
+            hayMesPosterior = true;
+        }
+    });
+
+    const banner = document.getElementById('modal-asoc-anticipo-banner');
+    if (banner) {
+        if (hayMesPosterior) {
+            banner.classList.remove('hidden');
+        } else {
+            banner.classList.add('hidden');
+        }
+    }
 }
 
 async function guardarAsociacionDirecto() {
@@ -469,7 +545,12 @@ async function guardarAsociacionDirecto() {
         });
         const res = await resp.json();
         if (res.ok) {
-            window.location.reload();
+            if (res.es_anticipo) {
+                alert("✓ Factura de mes posterior asociada exitosamente como ANTICIPO.\n\n" + (res.mensaje || "Se generaron automáticamente la Póliza de Anticipo y la Póliza de Diario de Aplicación."));
+                window.location.href = `/empresas/${empresaId}/pendientes?movimiento_id=${movimientoId}`;
+            } else {
+                window.location.reload();
+            }
         } else {
             alert("Error: " + (res.error || "No se pudo asociar."));
             if (btn) {

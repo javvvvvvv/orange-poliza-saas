@@ -713,7 +713,8 @@ def crear_polizas_anticipo(empresa_id: int, movimiento_id: int, cfdi_ids: list, 
             b_cta = cur.execute("SELECT cuenta_contable FROM bancos WHERE empresa_id = ? LIMIT 1", (empresa_id,)).fetchone()
             cuenta_banco = _sin_guiones(b_cta["cuenta_contable"]) if b_cta else "10201001"
 
-        tasa_iva = float(empresa["tasa_iva"] or 0.16)
+        tasa_raw = float(empresa.get("tasa_iva") or 16.0)
+        tasa_iva = tasa_raw / 100.0 if tasa_raw > 1.0 else tasa_raw
         cuenta_iva_trasladado = _sin_guiones(empresa.get("cuenta_iva_trasladado") or "20801001")
         cuenta_iva_por_trasladar = _sin_guiones(empresa.get("cuenta_iva_por_trasladar") or "20901001")
         cuenta_iva_acreditable = _sin_guiones(empresa.get("cuenta_iva_acreditable") or "11801001")
@@ -724,22 +725,43 @@ def crear_polizas_anticipo(empresa_id: int, movimiento_id: int, cfdi_ids: list, 
             cuenta_contra = cuenta_contraparte.split(" - ")[0].split()[0].replace("-", "").replace(".", "").strip()
         if not cuenta_contra:
             rfc_buscar = cfdi_principal["rfc_receptor" if tipo_mov == "ingreso" else "rfc_emisor"]
+            prefijo_contra = "105%" if tipo_mov == "ingreso" else "201%"
+            cta_excluir = "206%" if tipo_mov == "ingreso" else "120%"
             c_cat = cur.execute(
-                "SELECT cuenta FROM cuentas_catalogo WHERE empresa_id = ? AND (cuenta ILIKE ? OR descripcion ILIKE ?) LIMIT 1",
-                (empresa_id, f"%{rfc_buscar}%", f"%{persona_nombre[:10]}%")
+                """SELECT cuenta FROM cuentas_catalogo 
+                   WHERE empresa_id = ? 
+                     AND (cuenta LIKE ? OR REPLACE(cuenta, '-', '') LIKE ?)
+                     AND cuenta NOT LIKE ?
+                     AND (cuenta ILIKE ? OR descripcion ILIKE ? OR descripcion ILIKE ?)
+                   ORDER BY nivel DESC LIMIT 1""",
+                (empresa_id, prefijo_contra, prefijo_contra.replace("-", ""), cta_excluir, f"%{rfc_buscar}%", f"%{rfc_buscar}%", f"%{persona_nombre[:10]}%")
             ).fetchone()
             if c_cat:
                 cuenta_contra = _sin_guiones(c_cat["cuenta"])
             else:
                 cuenta_contra = "10501001" if tipo_mov == "ingreso" else "20101001"
 
-        aplica_iva = mov["afectable_impuestos"] is None or bool(mov["afectable_impuestos"])
-        if aplica_iva and tasa_iva > 0:
-            base = round(total_mov / (1.0 + tasa_iva), 2)
-            iva = round(total_mov - base, 2)
+        cfdi_id_p = cfdi_principal["id"]
+        imp_row = cur.execute(
+            """SELECT SUM(CASE WHEN tipo_impuesto = 'IVA' AND es_retencion = 0 THEN base ELSE 0 END) AS base,
+                      SUM(CASE WHEN tipo_impuesto = 'IVA' AND es_retencion = 0 THEN importe ELSE 0 END) AS iva
+               FROM cfdi_impuestos WHERE cfdi_id = ?""",
+            (cfdi_id_p,)
+        ).fetchone()
+
+        if imp_row and imp_row["base"] and float(imp_row["base"]) > 0:
+            tot_cfdi = float(cfdi_principal["total"] or total_mov)
+            prop = min(1.0, total_mov / tot_cfdi) if tot_cfdi > 0 else 1.0
+            base = round(float(imp_row["base"]) * prop, 2)
+            iva = round(float(imp_row["iva"]) * prop, 2)
         else:
-            base = total_mov
-            iva = 0.0
+            aplica_iva = mov["afectable_impuestos"] is None or bool(mov["afectable_impuestos"])
+            if aplica_iva and tasa_iva > 0:
+                base = round(total_mov / (1.0 + tasa_iva), 2)
+                iva = round(total_mov - base, 2)
+            else:
+                base = total_mov
+                iva = 0.0
 
         if tipo_mov == "ingreso" and not empresa.get("cuenta_anticipo_clientes"):
             cur.execute("UPDATE empresas SET cuenta_anticipo_clientes = ? WHERE id = ?", (cta_anticipo_display, empresa_id))

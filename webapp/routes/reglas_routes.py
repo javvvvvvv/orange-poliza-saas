@@ -163,13 +163,20 @@ def pendientes_siguiente(empresa_id):
     siguiente. Es el camino principal; el modo lista completa
     (con fórmulas manuales) sigue disponible en /pendientes/avanzado."""
     omitidos = [int(x) for x in session.get("pendientes_omitidos", []) if str(x).isdigit()]
+    mov_especifico_id = request.args.get("movimiento_id")
     with get_connection() as con:
-        movimiento = con.execute(
-            f"""SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion IN ('pendiente', 'sugerido')
-                {"AND id NOT IN (" + ",".join("?" * len(omitidos)) + ")" if omitidos else ""}
-                ORDER BY id ASC LIMIT 1""",
-            (empresa_id, *omitidos),
-        ).fetchone()
+        if mov_especifico_id and str(mov_especifico_id).isdigit():
+            movimiento = con.execute(
+                "SELECT * FROM movimientos WHERE id = ? AND empresa_id = ?",
+                (int(mov_especifico_id), empresa_id)
+            ).fetchone()
+        else:
+            movimiento = con.execute(
+                f"""SELECT * FROM movimientos WHERE empresa_id = ? AND estado_clasificacion IN ('pendiente', 'sugerido')
+                    {"AND id NOT IN (" + ",".join("?" * len(omitidos)) + ")" if omitidos else ""}
+                    ORDER BY id ASC LIMIT 1""",
+                (empresa_id, *omitidos),
+            ).fetchone()
         total_pendientes = con.execute(
             "SELECT COUNT(*) FROM movimientos WHERE empresa_id = ? AND estado_clasificacion IN ('pendiente', 'sugerido')",
             (empresa_id,),
@@ -207,7 +214,7 @@ def pendientes_siguiente(empresa_id):
         # conoce el RFC y los impuestos exactos: no hace falta preguntar
         # IVA ni afectable, solo la cuenta contable del cliente/proveedor.
         cfdis_raw = con.execute(
-            """SELECT c.id, c.uuid, c.serie, c.folio, c.rfc_emisor, c.nombre_emisor, c.rfc_receptor, c.nombre_receptor, c.total,
+            """SELECT c.id, c.uuid, c.serie, c.folio, c.fecha, c.rfc_emisor, c.nombre_emisor, c.rfc_receptor, c.nombre_receptor, c.total,
                       cm.importe_aplicado, cm.motivo
                FROM cfdi_movimiento cm
                JOIN cfdis c ON c.id = cm.cfdi_id
@@ -256,10 +263,21 @@ def pendientes_siguiente(empresa_id):
                 "tasa": tasa_calc,
             }
 
+    poliza_anticipo = None
+    poliza_aplicacion = None
+    if movimiento:
+        with get_connection() as con_p:
+            if movimiento.get("poliza_id"):
+                poliza_anticipo = con_p.execute("SELECT * FROM polizas WHERE id = ?", (movimiento["poliza_id"],)).fetchone()
+            if movimiento.get("poliza_aplicacion_id"):
+                poliza_aplicacion = con_p.execute("SELECT * FROM polizas WHERE id = ?", (movimiento["poliza_aplicacion_id"],)).fetchone()
+
     return render_template(
         "pendientes_siguiente.html", movimiento=movimiento, sugerencia=sugerencia,
         cuentas=cuentas, empresa=empresa, banco=banco, cfdi_info=cfdi_info,
         cfdis_asociados=cfdis_asociados,
+        poliza_anticipo=poliza_anticipo,
+        poliza_aplicacion=poliza_aplicacion,
         regla_sugerida=regla_sugerida,
         total_pendientes=total_pendientes,
         restantes=total_pendientes - len(omitidos),
