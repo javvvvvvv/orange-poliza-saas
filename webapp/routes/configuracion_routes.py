@@ -601,11 +601,17 @@ def documento_movimientos_json(empresa_id, documento_id):
     """
     with get_connection() as con:
         movs = con.execute(
-            """SELECT id, fecha, descripcion, tipo, total, rfc_contraparte, referencia_bancaria,
-                      estado_clasificacion, poliza_id
-               FROM movimientos
-               WHERE empresa_id = %s AND documento_id = %s
-               ORDER BY id ASC""",
+            """SELECT m.id, m.fecha, m.descripcion, m.tipo, m.total, m.rfc_contraparte, m.referencia_bancaria,
+                      m.numero_factura, m.estado_clasificacion, m.poliza_id,
+                      (
+                          SELECT string_agg(COALESCE(c.serie, '') || COALESCE(c.folio, 'S/F'), ', ')
+                          FROM cfdi_movimiento cm
+                          JOIN cfdis c ON c.id = cm.cfdi_id
+                          WHERE cm.movimiento_id = m.id AND cm.confirmado = 1
+                      ) AS facturas_cfdi
+               FROM movimientos m
+               WHERE m.empresa_id = %s AND m.documento_id = %s
+               ORDER BY m.id ASC""",
             (empresa_id, documento_id)
         ).fetchall()
 
@@ -620,6 +626,8 @@ def documento_movimientos_json(empresa_id, documento_id):
                 "total": float(m["total"] or 0),
                 "rfc_contraparte": m["rfc_contraparte"] or "",
                 "referencia": m["referencia_bancaria"] or "",
+                "numero_factura": m["numero_factura"] or "",
+                "facturas_cfdi": m["facturas_cfdi"] or "",
                 "estado": m["estado_clasificacion"] or "pendiente",
                 "poliza_id": m["poliza_id"],
             }
@@ -643,6 +651,7 @@ def movimiento_editar(empresa_id, movimiento_id):
     total = datos.get("total")
     rfc = (datos.get("rfc_contraparte") or "").strip().upper()
     referencia = (datos.get("referencia") or "").strip()
+    numero_factura = (datos.get("numero_factura") or "").strip()
 
     if not fecha or not descripcion or tipo not in ("ingreso", "egreso") or total is None:
         return jsonify({"ok": False, "error": "Datos incompletos o tipo inválido (debe ser ingreso o egreso)."}), 400
@@ -658,13 +667,402 @@ def movimiento_editar(empresa_id, movimiento_id):
         con.execute(
             """UPDATE movimientos
                SET fecha = %s, descripcion = %s, descripcion_normalizada = %s,
-                   tipo = %s, total = %s, rfc_contraparte = %s, referencia_bancaria = %s
+                   tipo = %s, total = %s, rfc_contraparte = %s, referencia_bancaria = %s,
+                   numero_factura = %s
                WHERE id = %s AND empresa_id = %s""",
-            (fecha, descripcion, descripcion.upper(), tipo, total_float, rfc or None, referencia or None, movimiento_id, empresa_id)
+            (fecha, descripcion, descripcion.upper(), tipo, total_float, rfc or None, referencia or None, numero_factura, movimiento_id, empresa_id)
         )
         con.commit()
 
     return jsonify({"ok": True, "mensaje": "Movimiento actualizado exitosamente."})
+
+
+# --- Explorador de CFDI y Asociación Manual de Facturas XML a Movimientos ---
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/cfdi/lista-json")
+@login_required
+@empresa_requerida
+def cfdi_lista_json(empresa_id):
+    """
+    Devuelve la lista de facturas CFDI (XML) disponibles para vincular a movimientos,
+    con búsqueda por texto, folio, UUID, RFC o razón social, y cálculo de saldo pendiente.
+    """
+    buscar = request.args.get("buscar", "").strip()
+    rfc = request.args.get("rfc", "").strip().upper()
+    tipo = request.args.get("tipo", "").strip()  # emitido | recibido
+    movimiento_id = request.args.get("movimiento_id")
+
+    with get_connection() as con:
+        empresa = con.execute("SELECT rfc FROM empresas WHERE id = %s", (empresa_id,)).fetchone()
+        rfc_empresa = (empresa["rfc"] if empresa else "") or ""
+
+        where = ["c.empresa_id = %s"]
+        params = [empresa_id]
+
+        if rfc and rfc not in ("ND", "N/A", "NA", "XXX", "000000000000"):
+            where.append("(c.rfc_emisor = %s OR c.rfc_receptor = %s)")
+            params.extend([rfc, rfc])
+
+        if tipo == "emitido":
+            where.append("c.rfc_emisor = %s")
+            params.append(rfc_empresa)
+        elif tipo == "recibido":
+            where.append("c.rfc_receptor = %s")
+            params.append(rfc_empresa)
+
+        if buscar:
+            b_norm = buscar.replace("-", "").replace(" ", "").upper()
+            p = f"%{buscar}%"
+            p_norm = f"%{b_norm}%"
+            where.append("""(
+                c.folio ILIKE %s OR
+                c.serie ILIKE %s OR
+                c.uuid ILIKE %s OR
+                REPLACE(c.uuid, '-', '') ILIKE %s OR
+                c.rfc_emisor ILIKE %s OR
+                c.nombre_emisor ILIKE %s OR
+                c.rfc_receptor ILIKE %s OR
+                c.nombre_receptor ILIKE %s
+            )""")
+            params.extend([p, p, p, p_norm, p, p, p, p])
+
+        where_sql = " AND ".join(where)
+
+        mov_id_int = int(movimiento_id) if (movimiento_id and str(movimiento_id).isdigit()) else -1
+        sql = f"""
+            SELECT c.id, c.uuid, c.serie, c.folio, c.fecha, c.total, c.subtotal,
+                   c.rfc_emisor, c.nombre_emisor, c.rfc_receptor, c.nombre_receptor,
+                   c.tipo_comprobante, c.moneda, c.archivo_origen,
+                   COALESCE((SELECT SUM(cm.importe_aplicado) FROM cfdi_movimiento cm WHERE cm.cfdi_id = c.id AND cm.confirmado = 1), 0) AS aplicado_confirmado,
+                   EXISTS(
+                       SELECT 1 FROM cfdi_movimiento cm 
+                       WHERE cm.cfdi_id = c.id AND cm.movimiento_id = %s AND cm.confirmado = 1
+                   ) AS ya_asociado_a_este_mov
+            FROM cfdis c
+            WHERE {where_sql}
+            ORDER BY c.fecha DESC, c.id DESC
+            LIMIT 150
+        """
+        rows = con.execute(sql, tuple([mov_id_int] + params)).fetchall()
+
+        resultado = []
+        for r in rows:
+            tot = float(r["total"] or 0.0)
+            apl = float(r["aplicado_confirmado"] or 0.0)
+            saldo = max(0.0, round(tot - apl, 2))
+            contraparte_rfc = r["rfc_receptor"] if r["rfc_emisor"] == rfc_empresa else r["rfc_emisor"]
+            contraparte_nombre = r["nombre_receptor"] if r["rfc_emisor"] == rfc_empresa else r["nombre_emisor"]
+            resultado.append({
+                "id": r["id"],
+                "uuid": r["uuid"],
+                "serie": r["serie"] or "",
+                "folio": r["folio"] or "",
+                "fecha": str(r["fecha"]),
+                "total": tot,
+                "aplicado": apl,
+                "saldo": saldo,
+                "contraparte_rfc": contraparte_rfc,
+                "contraparte_nombre": contraparte_nombre or "",
+                "tipo_comprobante": r["tipo_comprobante"] or "I",
+                "moneda": r["moneda"] or "MXN",
+                "ya_asociado": bool(r["ya_asociado_a_este_mov"]),
+            })
+
+    return jsonify({"ok": True, "cfdis": resultado})
+
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/cfdi/<int:cfdi_id>/detalle-json")
+@login_required
+@empresa_requerida
+def cfdi_detalle_json(empresa_id, cfdi_id):
+    """
+    Devuelve los datos completos del XML de una factura para su visualización amigable en modal.
+    """
+    with get_connection() as con:
+        c = con.execute("SELECT * FROM cfdis WHERE id = %s AND empresa_id = %s", (cfdi_id, empresa_id)).fetchone()
+        if not c:
+            return jsonify({"ok": False, "error": "CFDI no encontrado."}), 404
+
+        impuestos = con.execute("SELECT * FROM cfdi_impuestos WHERE cfdi_id = %s", (cfdi_id,)).fetchall()
+        movs = con.execute("""
+            SELECT m.id, m.fecha, m.descripcion, m.total, cm.importe_aplicado, cm.motivo
+            FROM cfdi_movimiento cm
+            JOIN movimientos m ON m.id = cm.movimiento_id
+            WHERE cm.cfdi_id = %s AND cm.confirmado = 1
+        """, (cfdi_id,)).fetchall()
+
+    impuestos_data = []
+    for i in impuestos:
+        impuestos_data.append({
+            "base": float(i["base"] or 0.0),
+            "importe": float(i["importe"] or 0.0),
+            "tasa": float(i["tasa"] or 0.0),
+            "tipo_factor": i.get("tipo_factor", "Tasa"),
+            "es_retencion": bool(i["es_retencion"]),
+            "tipo_impuesto": i["tipo_impuesto"] or "IVA",
+        })
+
+    movs_data = []
+    for m in movs:
+        movs_data.append({
+            "id": m["id"],
+            "fecha": str(m["fecha"]),
+            "descripcion": m["descripcion"],
+            "total": float(m["total"] or 0.0),
+            "importe_aplicado": float(m["importe_aplicado"] or 0.0),
+            "motivo": m["motivo"] or "",
+        })
+
+    return jsonify({
+        "ok": True,
+        "cfdi": {
+            "id": c["id"],
+            "uuid": c["uuid"],
+            "serie": c["serie"] or "",
+            "folio": c["folio"] or "",
+            "fecha": str(c["fecha"]),
+            "total": float(c["total"] or 0.0),
+            "subtotal": float(c["subtotal"] or 0.0),
+            "descuento": float(c.get("descuento") or 0.0),
+            "moneda": c.get("moneda") or "MXN",
+            "rfc_emisor": c["rfc_emisor"],
+            "nombre_emisor": c["nombre_emisor"] or "",
+            "rfc_receptor": c["rfc_receptor"],
+            "nombre_receptor": c["nombre_receptor"] or "",
+            "tipo_comprobante": c.get("tipo_comprobante") or "I",
+            "metodo_pago": c.get("metodo_pago") or "",
+            "archivo_origen": c.get("archivo_origen") or "",
+            "impuestos": impuestos_data,
+            "movimientos_asociados": movs_data,
+        }
+    })
+
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/movimientos/<int:movimiento_id>/asociar-cfdi", methods=["POST"])
+@login_required
+@empresa_requerida
+def movimiento_asociar_cfdi(empresa_id, movimiento_id):
+    """
+    Asocia manualmente una o varias facturas CFDI (XML) seleccionadas por el usuario a un movimiento.
+    """
+    datos = request.get_json(silent=True) or {}
+    cfdi_ids = datos.get("cfdi_ids") or []
+    if isinstance(cfdi_ids, (int, str)):
+        cfdi_ids = [int(cfdi_ids)]
+    cfdi_ids = [int(cid) for cid in cfdi_ids if str(cid).isdigit()]
+
+    if not cfdi_ids:
+        return jsonify({"ok": False, "error": "Selecciona al menos una factura CFDI para asociar."}), 400
+
+    with get_connection() as con:
+        cur = con.cursor()
+        mov = cur.execute(
+            "SELECT * FROM movimientos WHERE id = %s AND empresa_id = %s",
+            (movimiento_id, empresa_id)
+        ).fetchone()
+        if not mov:
+            return jsonify({"ok": False, "error": "Movimiento no encontrado."}), 404
+
+        empresa = cur.execute("SELECT rfc FROM empresas WHERE id = %s", (empresa_id,)).fetchone()
+        rfc_empresa = (empresa["rfc"] if empresa else "") or ""
+
+        placeholders = ",".join(["%s"] * len(cfdi_ids))
+        cfdis = cur.execute(
+            f"SELECT * FROM cfdis WHERE id IN ({placeholders}) AND empresa_id = %s",
+            tuple(cfdi_ids + [empresa_id])
+        ).fetchall()
+
+        if not cfdis:
+            return jsonify({"ok": False, "error": "No se encontraron las facturas indicadas."}), 404
+
+        ya_aplicado_mov = cur.execute(
+            "SELECT COALESCE(SUM(importe_aplicado), 0) FROM cfdi_movimiento WHERE movimiento_id = %s AND confirmado = 1",
+            (movimiento_id,)
+        ).fetchone()[0] or 0.0
+
+        saldo_mov = max(0.0, float(mov["total"]) - float(ya_aplicado_mov))
+        grupo_id = uuid.uuid4().hex
+        folios_agregados = []
+        contraparte_rfc = None
+
+        for c in cfdis:
+            c_tot = float(c["total"] or 0.0)
+            apl_cfdi = cur.execute(
+                "SELECT COALESCE(SUM(importe_aplicado), 0) FROM cfdi_movimiento WHERE cfdi_id = %s AND confirmado = 1",
+                (c["id"],)
+            ).fetchone()[0] or 0.0
+            saldo_cfdi = max(0.0, c_tot - float(apl_cfdi))
+
+            importe_aplicar = min(saldo_cfdi, saldo_mov) if saldo_mov > 0 and saldo_cfdi > 0 else (c_tot if c_tot > 0 else float(mov["total"]))
+            saldo_mov = max(0.0, saldo_mov - importe_aplicar)
+
+            cur.execute(
+                """INSERT INTO cfdi_movimiento
+                   (grupo_id, cfdi_id, movimiento_id, importe_aplicado, tipo_match, confianza, motivo, confirmado)
+                   VALUES (%s, %s, %s, %s, 'manual', 100, 'Asociación manual seleccionada por el usuario', 1)
+                   ON CONFLICT (cfdi_id, movimiento_id) DO UPDATE SET
+                    importe_aplicado = EXCLUDED.importe_aplicado,
+                    confirmado = 1,
+                    motivo = 'Asociación manual confirmada por el usuario'""",
+                (grupo_id, c["id"], movimiento_id, importe_aplicar)
+            )
+            f_str = f"{c['serie'] or ''}{c['folio'] or ''}".strip()
+            if f_str:
+                folios_agregados.append(f_str)
+            if not contraparte_rfc:
+                contraparte_rfc = c["rfc_receptor"] if c["rfc_emisor"] == rfc_empresa else c["rfc_emisor"]
+
+        todos_folios = cur.execute(
+            """SELECT DISTINCT COALESCE(c.serie, '') || COALESCE(c.folio, '') AS fol
+               FROM cfdi_movimiento cm JOIN cfdis c ON c.id = cm.cfdi_id
+               WHERE cm.movimiento_id = %s AND cm.confirmado = 1""",
+            (movimiento_id,)
+        ).fetchall()
+        lista_folios = [r["fol"].strip() for r in todos_folios if r["fol"] and r["fol"].strip()]
+        str_folios = ", ".join(lista_folios)
+
+        cur.execute(
+            """UPDATE movimientos
+               SET numero_factura = %s,
+                   rfc_contraparte = COALESCE(NULLIF(rfc_contraparte, ''), %s)
+               WHERE id = %s AND empresa_id = %s""",
+            (str_folios, contraparte_rfc, movimiento_id, empresa_id)
+        )
+        con.commit()
+
+    return jsonify({"ok": True, "mensaje": f"{len(cfdis)} factura(s) asociadas correctamente al movimiento.", "folios": str_folios})
+
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/movimientos/<int:movimiento_id>/desasociar-cfdi", methods=["POST"])
+@login_required
+@empresa_requerida
+def movimiento_desasociar_cfdi(empresa_id, movimiento_id):
+    """
+    Desvincula una factura CFDI (o todas) de un movimiento.
+    """
+    datos = request.get_json(silent=True) or {}
+    cfdi_id = datos.get("cfdi_id")
+
+    with get_connection() as con:
+        cur = con.cursor()
+        if cfdi_id and str(cfdi_id).isdigit():
+            cur.execute("DELETE FROM cfdi_movimiento WHERE movimiento_id = %s AND cfdi_id = %s", (movimiento_id, int(cfdi_id)))
+        else:
+            cur.execute("DELETE FROM cfdi_movimiento WHERE movimiento_id = %s", (movimiento_id,))
+
+        todos_folios = cur.execute(
+            """SELECT DISTINCT COALESCE(c.serie, '') || COALESCE(c.folio, '') AS fol
+               FROM cfdi_movimiento cm JOIN cfdis c ON c.id = cm.cfdi_id
+               WHERE cm.movimiento_id = %s AND cm.confirmado = 1""",
+            (movimiento_id,)
+        ).fetchall()
+        lista_folios = [r["fol"].strip() for r in todos_folios if r["fol"] and r["fol"].strip()]
+        str_folios = ", ".join(lista_folios)
+
+        cur.execute("UPDATE movimientos SET numero_factura = %s WHERE id = %s AND empresa_id = %s", (str_folios, movimiento_id, empresa_id))
+        con.commit()
+
+    return jsonify({"ok": True, "mensaje": "Asociación eliminada correctamente.", "folios": str_folios})
+
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/movimientos")
+@login_required
+@empresa_requerida
+def movimientos_lista(empresa_id):
+    """
+    Pantalla completa para revisar y editar todos los movimientos bancarios importados,
+    sus facturas CFDI asociadas, estados de clasificación y pólizas.
+    """
+    buscar = request.args.get("buscar", "").strip()
+    estado = request.args.get("estado", "").strip()
+    tipo = request.args.get("tipo", "").strip()
+    doc_id = request.args.get("documento_id", "").strip()
+    pagina = max(1, int(request.args.get("pagina", 1)))
+    por_pagina = 50
+
+    with get_connection() as con:
+        docs = con.execute(
+            "SELECT id, nombre_archivo FROM documentos_importados WHERE empresa_id = %s ORDER BY id DESC",
+            (empresa_id,)
+        ).fetchall()
+        bancos = con.execute("SELECT id, nombre, cuenta_contable FROM bancos WHERE empresa_id = %s", (empresa_id,)).fetchall()
+
+        where_clauses = ["m.empresa_id = %s"]
+        params = [empresa_id]
+
+        if buscar:
+            p = f"%{buscar}%"
+            where_clauses.append("(m.descripcion ILIKE %s OR m.rfc_contraparte ILIKE %s OR m.numero_factura ILIKE %s OR m.referencia_bancaria ILIKE %s)")
+            params.extend([p, p, p, p])
+
+        if estado:
+            where_clauses.append("m.estado_clasificacion = %s")
+            params.append(estado)
+
+        if tipo in ("ingreso", "egreso"):
+            where_clauses.append("m.tipo = %s")
+            params.append(tipo)
+
+        if doc_id and doc_id.isdigit():
+            where_clauses.append("m.documento_id = %s")
+            params.append(int(doc_id))
+
+        where_sql = " AND ".join(where_clauses)
+        total_movimientos = con.execute(f"SELECT COUNT(*) FROM movimientos m WHERE {where_sql}", tuple(params)).fetchone()[0]
+
+        offset = (pagina - 1) * por_pagina
+        params_pag = list(params) + [por_pagina, offset]
+
+        sql = f"""
+            SELECT m.*, 
+                   d.nombre_archivo,
+                   p.numero AS poliza_numero,
+                   p.tipo AS poliza_tipo,
+                   (
+                       SELECT string_agg(COALESCE(c.serie, '') || COALESCE(c.folio, 'S/F'), ', ')
+                       FROM cfdi_movimiento cm
+                       JOIN cfdis c ON c.id = cm.cfdi_id
+                       WHERE cm.movimiento_id = m.id AND cm.confirmado = 1
+                   ) AS facturas_cfdi,
+                   (
+                       SELECT COUNT(*) FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1
+                   ) AS total_cfdis_asociados
+            FROM movimientos m
+            LEFT JOIN documentos_importados d ON d.id = m.documento_id
+            LEFT JOIN polizas p ON p.id = m.poliza_id
+            WHERE {where_sql}
+            ORDER BY m.fecha DESC, m.id DESC
+            LIMIT %s OFFSET %s
+        """
+        movimientos = con.execute(sql, tuple(params_pag)).fetchall()
+
+        resumen = con.execute("""
+            SELECT 
+                COUNT(*) AS total,
+                COALESCE(SUM(total), 0) AS suma_total,
+                COUNT(CASE WHEN estado_clasificacion IN ('pendiente', 'sugerido') THEN 1 END) AS pendientes,
+                COUNT(CASE WHEN poliza_id IS NOT NULL THEN 1 END) AS con_poliza,
+                COUNT(CASE WHEN EXISTS (SELECT 1 FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1) THEN 1 END) AS con_cfdi
+            FROM movimientos m
+            WHERE m.empresa_id = %s
+        """, (empresa_id,)).fetchone()
+
+    total_paginas = max(1, (total_movimientos + por_pagina - 1) // por_pagina)
+
+    return render_template(
+        "movimientos.html",
+        movimientos=movimientos,
+        docs=docs,
+        bancos=bancos,
+        resumen=resumen,
+        total_movimientos=total_movimientos,
+        pagina=pagina,
+        total_paginas=total_paginas,
+        buscar=buscar,
+        estado=estado,
+        tipo=tipo,
+        doc_id=doc_id,
+    )
 
 # --- Conciliaciones de CFDI sugeridas y confirmadas ---
 

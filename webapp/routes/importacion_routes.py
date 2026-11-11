@@ -234,15 +234,22 @@ def importar_confirmar(empresa_id):
         return redirect(url_for("importacion.importar", empresa_id=empresa_id))
 
     datos = session.pop(f"preview_{token}")
-    banco_id = datos["banco_id"]
-    if banco_id:
-        with get_connection() as con:
+    banco_id = datos.get("banco_id")
+    with get_connection() as con:
+        if banco_id:
             banco_valido = con.execute(
                 "SELECT id FROM bancos WHERE id = ? AND empresa_id = ?",
                 (banco_id, empresa_id),
             ).fetchone()
-        if not banco_valido:
-            banco_id = None
+            if not banco_valido:
+                banco_id = None
+        if not banco_id:
+            primer_banco = con.execute(
+                "SELECT id FROM bancos WHERE empresa_id = ? ORDER BY id ASC LIMIT 1",
+                (empresa_id,),
+            ).fetchone()
+            if primer_banco:
+                banco_id = primer_banco[0] if isinstance(primer_banco, (tuple, list)) else primer_banco["id"]
     nombre_hoja = request.form.get("nombre_hoja") or None
 
     def _vacio_a_none(valor):

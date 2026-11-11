@@ -1,0 +1,609 @@
+{% extends "base.html" %}
+{% block titulo %}Revisar Movimientos Bancarios{% endblock %}
+{% block contenido %}
+{% set eid = request.view_args.get('empresa_id') %}
+<div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+  <div>
+    <h1 class="text-xl font-bold text-marino-900">Revisión y Edición de Movimientos Bancarios</h1>
+    <p class="text-xs text-slate-500 mt-1">
+      Revisa todos los movimientos importados de los estados de cuenta, corrige sus datos, consulta y vincula facturas XML (CFDI) en caso de que falten.
+    </p>
+  </div>
+  <div class="flex items-center gap-2">
+    <a href="/empresas/{{ eid }}/importar"
+       class="px-3.5 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-xs font-bold shadow-sm flex items-center gap-1.5 transition-colors">
+      <span>➕</span> Importar Más Movimientos
+    </a>
+    <a href="/empresas/{{ eid }}/documentos"
+       class="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold shadow-sm transition-colors">
+      <span>📂</span> Ver Documentos / Re-mapear
+    </a>
+  </div>
+</div>
+
+<!-- TARJETAS DE RESUMEN -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+  <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+    <div class="text-xs uppercase text-slate-400 font-semibold tracking-wider">Total Movimientos</div>
+    <div class="text-2xl font-bold text-marino-900 mt-1">{{ resumen.total or 0 }}</div>
+    <div class="text-xs text-slate-500 mt-0.5 font-mono">${{ "%.2f"|format(resumen.suma_total or 0) }}</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+    <div class="text-xs uppercase text-slate-400 font-semibold tracking-wider">Pendientes de Clasificar</div>
+    <div class="text-2xl font-bold text-amber-600 mt-1">{{ resumen.pendientes or 0 }}</div>
+    <div class="text-xs text-slate-500 mt-0.5">Esperando asignación o regla</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+    <div class="text-xs uppercase text-slate-400 font-semibold tracking-wider">Con Factura XML</div>
+    <div class="text-2xl font-bold text-emerald-600 mt-1">{{ resumen.con_cfdi or 0 }}</div>
+    <div class="text-xs text-slate-500 mt-0.5">Asociados automáticamente o a mano</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+    <div class="text-xs uppercase text-slate-400 font-semibold tracking-wider">Con Póliza Generada</div>
+    <div class="text-2xl font-bold text-blue-600 mt-1">{{ resumen.con_poliza or 0 }}</div>
+    <div class="text-xs text-slate-500 mt-0.5">Listos para exportar a CONTPAQi</div>
+  </div>
+</div>
+
+<!-- BARRA DE FILTROS Y BÚSQUEDA -->
+<div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm mb-6">
+  <form method="get" action="/empresas/{{ eid }}/movimientos" class="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+    <div class="md:col-span-2">
+      <label class="block text-xs font-semibold text-slate-600 mb-1">Buscar por texto, RFC, Factura o Referencia</label>
+      <input type="text" name="buscar" value="{{ buscar }}" placeholder="Ej. Amazon, NOMINA, F-123, MOT021..."
+             class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-orange-500 focus:outline-none">
+    </div>
+    <div>
+      <label class="block text-xs font-semibold text-slate-600 mb-1">Tipo</label>
+      <select name="tipo" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-orange-500 focus:outline-none">
+        <option value="">Todos los tipos</option>
+        <option value="ingreso" {% if tipo == 'ingreso' %}selected{% endif %}>Ingresos (+)</option>
+        <option value="egreso" {% if tipo == 'egreso' %}selected{% endif %}>Egresos (-)</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs font-semibold text-slate-600 mb-1">Documento de Origen</label>
+      <select name="documento_id" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-orange-500 focus:outline-none">
+        <option value="">Todos los archivos</option>
+        {% for d in docs %}
+        <option value="{{ d.id }}" {% if doc_id == d.id|string %}selected{% endif %}>{{ d.nombre_archivo }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="flex items-center gap-2">
+      <button type="submit" class="w-full bg-naranja-500 hover:bg-naranja-600 text-white font-bold py-2 px-4 rounded-lg text-xs shadow-sm transition-colors">
+        🔍 Filtrar
+      </button>
+      {% if buscar or tipo or doc_id or estado %}
+      <a href="/empresas/{{ eid }}/movimientos" class="bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold py-2 px-3 rounded-lg text-xs transition-colors" title="Limpiar filtros">
+        ✕
+      </a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+
+<!-- TABLA DE MOVIMIENTOS -->
+<div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm mb-6">
+  <div class="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
+    <div class="text-sm font-bold text-marino-900">
+      Movimientos Mostrados ({{ movimientos|length }} de {{ total_movimientos }})
+    </div>
+    <div class="text-xs text-slate-500">
+      Página {{ pagina }} de {{ total_paginas }}
+    </div>
+  </div>
+  {% if movimientos %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-xs">
+      <thead>
+        <tr class="text-left text-slate-600 bg-slate-50 border-b border-slate-200 uppercase tracking-wider text-[11px]">
+          <th class="px-4 py-3 font-semibold">Fecha</th>
+          <th class="px-3 py-3 font-semibold">Tipo</th>
+          <th class="px-4 py-3 font-semibold">Concepto / Descripción</th>
+          <th class="px-4 py-3 font-semibold">RFC Contraparte</th>
+          <th class="px-4 py-3 font-semibold">Factura(s) / Folio</th>
+          <th class="px-4 py-3 font-semibold text-right">Importe</th>
+          <th class="px-4 py-3 font-semibold">XML Asociado</th>
+          <th class="px-3 py-3 font-semibold">Póliza</th>
+          <th class="px-4 py-3 font-semibold text-right">Acciones</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for m in movimientos %}
+        <tr class="hover:bg-slate-50/80 transition-colors" id="fila-mov-{{ m.id }}">
+          <td class="px-4 py-3 whitespace-nowrap font-mono text-slate-700">
+            {{ m.fecha }}
+          </td>
+          <td class="px-3 py-3 whitespace-nowrap">
+            {% if m.tipo == 'ingreso' %}
+            <span class="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded font-semibold text-[10px]">
+              INGRESO
+            </span>
+            {% else %}
+            <span class="bg-rose-50 text-rose-700 border border-rose-200 px-2 py-0.5 rounded font-semibold text-[10px]">
+              EGRESO
+            </span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 font-medium text-slate-800 max-w-xs truncate" title="{{ m.descripcion }}">
+            {{ m.descripcion }}
+            {% if m.referencia_bancaria %}
+            <div class="text-[10px] text-slate-400 font-mono">Ref: {{ m.referencia_bancaria }}</div>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 whitespace-nowrap font-mono">
+            {% if m.rfc_contraparte %}
+            <span class="text-slate-800 font-semibold">{{ m.rfc_contraparte }}</span>
+            {% else %}
+            <span class="text-slate-400 italic">Sin RFC</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 font-mono text-slate-700 max-w-xs truncate" title="{{ m.numero_factura or '' }}">
+            {% if m.numero_factura %}
+            <span class="bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded font-semibold">{{ m.numero_factura }}</span>
+            {% else %}
+            <span class="text-slate-300">-</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 whitespace-nowrap text-right font-mono font-bold text-slate-900">
+            ${{ "%.2f"|format(m.total) }}
+          </td>
+          <td class="px-4 py-3">
+            {% if m.facturas_cfdi %}
+            <div class="flex items-center gap-1.5 flex-wrap">
+              <span class="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded font-mono font-bold text-[11px]" title="CFDIs vinculados">
+                {{ m.facturas_cfdi }}
+              </span>
+              <button onclick="abrirModalAsociar({{ m.id }}, '{{ m.tipo }}', '{{ m.rfc_contraparte or '' }}', {{ m.total }}, '{{ m.descripcion|escape }}')"
+                      class="text-[10px] text-slate-500 hover:text-emerald-700 underline font-semibold" title="Editar o agregar facturas XML">
+                Modificar
+              </button>
+            </div>
+            {% else %}
+            <button onclick="abrirModalAsociar({{ m.id }}, '{{ m.tipo }}', '{{ m.rfc_contraparte or '' }}', {{ m.total }}, '{{ m.descripcion|escape }}')"
+                    class="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded font-semibold text-[11px] flex items-center gap-1 transition-colors">
+              <span>🔍</span> Asociar XML
+            </button>
+            {% endif %}
+          </td>
+          <td class="px-3 py-3 whitespace-nowrap">
+            {% if m.poliza_id %}
+            <span class="text-blue-700 font-bold bg-blue-50 border border-blue-200 px-2 py-0.5 rounded text-[10px]">
+              #{{ m.poliza_numero }} ({{ m.poliza_tipo|upper }})
+            </span>
+            {% else %}
+            <span class="text-slate-400 text-[10px]">Sin póliza</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 whitespace-nowrap text-right">
+            <button onclick="abrirModalEditar({{ m.id }}, '{{ m.fecha }}', '{{ m.tipo }}', {{ m.total }}, '{{ m.descripcion|escape }}', '{{ m.rfc_contraparte or '' }}', '{{ m.referencia_bancaria or '' }}', '{{ m.numero_factura or '' }}')"
+                    class="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-semibold text-xs transition-colors">
+              ✏️ Editar
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- PAGINACIÓN -->
+  {% if total_paginas > 1 %}
+  <div class="px-5 py-3 border-t border-slate-200 flex items-center justify-between text-xs">
+    <div>
+      Mostrando página <strong>{{ pagina }}</strong> de <strong>{{ total_paginas }}</strong>
+    </div>
+    <div class="flex items-center gap-1">
+      {% if pagina > 1 %}
+      <a href="/empresas/{{ eid }}/movimientos?pagina={{ pagina - 1 }}&buscar={{ buscar }}&tipo={{ tipo }}&documento_id={{ doc_id }}&estado={{ estado }}"
+         class="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-semibold">
+        ← Anterior
+      </a>
+      {% endif %}
+      {% if pagina < total_paginas %}
+      <a href="/empresas/{{ eid }}/movimientos?pagina={{ pagina + 1 }}&buscar={{ buscar }}&tipo={{ tipo }}&documento_id={{ doc_id }}&estado={{ estado }}"
+         class="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-semibold">
+        Siguiente →
+      </a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% else %}
+  <div class="text-center py-12 text-slate-400 text-sm">
+    No se encontraron movimientos con los filtros especificados.
+  </div>
+  {% endif %}
+</div>
+
+<!-- MODAL PARA EDITAR MOVIMIENTO -->
+<div id="modal-editar-mov" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+    <div class="px-6 py-4 bg-marino-900 text-white flex items-center justify-between">
+      <div>
+        <h3 class="font-bold text-base">Editar Movimiento Bancario</h3>
+        <p class="text-xs text-slate-300 mt-0.5">Corrige fecha, concepto, RFC, tipo, importe o número de factura</p>
+      </div>
+      <button type="button" onclick="cerrarModalEditar()" class="text-slate-400 hover:text-white text-lg">✕</button>
+    </div>
+    <div class="p-6 space-y-4">
+      <input type="hidden" id="edit-id">
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Fecha</label>
+          <input type="date" id="edit-fecha" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Tipo de Movimiento</label>
+          <select id="edit-tipo" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-semibold">
+            <option value="ingreso">INGRESO (+)</option>
+            <option value="egreso">EGRESO (-)</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs font-semibold text-slate-700 mb-1">Concepto / Descripción</label>
+        <input type="text" id="edit-descripcion" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-medium">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Importe ($)</label>
+          <input type="number" step="0.01" id="edit-total" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono font-bold">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">RFC Contraparte</label>
+          <input type="text" id="edit-rfc" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono uppercase" placeholder="Ej. MOT021014QC4">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Número de Factura(s) / Folios</label>
+          <input type="text" id="edit-factura" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono" placeholder="Ej. GS 1692 / GS 1693">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Referencia Bancaria</label>
+          <input type="text" id="edit-referencia" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono">
+        </div>
+      </div>
+    </div>
+    <div class="px-6 py-3 bg-slate-50 border-t border-slate-200 flex justify-end gap-2">
+      <button type="button" onclick="cerrarModalEditar()" class="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-100">
+        Cancelar
+      </button>
+      <button type="button" onclick="guardarEdicionMovimiento()" class="px-4 py-2 bg-naranja-500 hover:bg-naranja-600 text-white text-xs font-bold rounded-lg shadow-sm">
+        💾 Guardar Cambios
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL PARA ASOCIAR FACTURAS XML (CFDI) -->
+<div id="modal-asociar-cfdi" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[90vh]">
+    <div class="px-6 py-4 bg-marino-900 text-white flex items-center justify-between">
+      <div>
+        <h3 class="font-bold text-base flex items-center gap-2">
+          <span>🔍</span> Vincular Facturas XML (CFDI) al Movimiento
+        </h3>
+        <p class="text-xs text-slate-300 mt-0.5" id="asoc-mov-info">
+          Movimiento: Cargando...
+        </p>
+      </div>
+      <button type="button" onclick="cerrarModalAsociar()" class="text-slate-400 hover:text-white text-lg">✕</button>
+    </div>
+
+    <div class="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-3">
+      <div class="flex-1 relative">
+        <input type="text" id="asoc-buscar" oninput="buscarCfdisDebounced()"
+               placeholder="Buscar por Folio (ej. 1692), Serie, UUID, RFC o Proveedor/Cliente..."
+               class="w-full border border-slate-300 rounded-lg pl-8 pr-3 py-2 text-xs focus:ring-2 focus:ring-orange-500 focus:outline-none">
+        <span class="absolute left-2.5 top-2 text-slate-400 text-xs">🔍</span>
+      </div>
+      <button type="button" onclick="cargarCfdisParaAsociar()" class="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold">
+        Actualizar
+      </button>
+    </div>
+
+    <!-- LISTA DE XMLS -->
+    <div class="flex-1 overflow-y-auto p-4 space-y-2" id="asoc-contenedor-cfdis">
+      <div class="text-center py-8 text-slate-400 text-xs">Cargando facturas XML disponibles...</div>
+    </div>
+
+    <div class="px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+      <div class="text-xs text-slate-500" id="asoc-contador-seleccion">
+        0 factura(s) seleccionada(s)
+      </div>
+      <div class="flex items-center gap-2">
+        <button type="button" onclick="desasociarTodas()" id="btn-desasociar" class="px-3 py-2 border border-rose-300 text-rose-700 hover:bg-rose-50 text-xs font-semibold rounded-lg hidden">
+          Quitar Asociación Actual
+        </button>
+        <button type="button" onclick="cerrarModalAsociar()" class="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-100">
+          Cancelar
+        </button>
+        <button type="button" onclick="confirmarAsociacion()" id="btn-confirmar-asoc" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm">
+          ✅ Asociar Seleccionadas
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL PARA VER DETALLE COMPLETO DE UN CFDI -->
+<div id="modal-detalle-xml" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+    <div class="px-6 py-4 bg-slate-800 text-white flex items-center justify-between">
+      <h4 class="font-bold text-sm">Detalle de Factura XML (CFDI)</h4>
+      <button type="button" onclick="document.getElementById('modal-detalle-xml').classList.add('hidden')" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <div class="p-6 overflow-y-auto max-h-[70vh] space-y-4 text-xs" id="detalle-xml-contenido">
+      Cargando detalle...
+    </div>
+  </div>
+</div>
+
+<script>
+const empresaId = {{ eid }};
+const csrfToken = "{{ csrf_token() }}";
+let movActualId = null;
+let cfdisCargados = [];
+let debounceTimer = null;
+
+function abrirModalEditar(id, fecha, tipo, total, desc, rfc, ref, fact) {
+    document.getElementById('edit-id').value = id;
+    document.getElementById('edit-fecha').value = fecha;
+    document.getElementById('edit-tipo').value = tipo;
+    document.getElementById('edit-total').value = total;
+    document.getElementById('edit-descripcion').value = desc;
+    document.getElementById('edit-rfc').value = rfc;
+    document.getElementById('edit-referencia').value = ref;
+    document.getElementById('edit-factura').value = fact;
+
+    const m = document.getElementById('modal-editar-mov');
+    m.classList.remove('hidden');
+    m.classList.add('flex');
+}
+
+function cerrarModalEditar() {
+    const m = document.getElementById('modal-editar-mov');
+    m.classList.add('hidden');
+    m.classList.remove('flex');
+}
+
+async function guardarEdicionMovimiento() {
+    const id = document.getElementById('edit-id').value;
+    const payload = {
+        fecha: document.getElementById('edit-fecha').value,
+        tipo: document.getElementById('edit-tipo').value,
+        total: parseFloat(document.getElementById('edit-total').value),
+        descripcion: document.getElementById('edit-descripcion').value,
+        rfc_contraparte: document.getElementById('edit-rfc').value,
+        referencia: document.getElementById('edit-referencia').value,
+        numero_factura: document.getElementById('edit-factura').value,
+    };
+
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/movimientos/${id}/editar`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify(payload)
+        });
+        const res = await resp.json();
+        if (res.ok) {
+            window.location.reload();
+        } else {
+            alert("Error: " + (res.error || "No se pudo actualizar el movimiento."));
+        }
+    } catch(e) {
+        alert("Error de conexión al guardar el movimiento.");
+    }
+}
+
+// ASOCIACIÓN DE XML
+function abrirModalAsociar(id, tipo, rfc, total, desc) {
+    movActualId = id;
+    document.getElementById('asoc-mov-info').innerText = `Movimiento #${id} (${tipo.toUpperCase()} $${total.toFixed(2)}) · ${rfc ? 'RFC: ' + rfc : 'Sin RFC'} · ${desc}`;
+    document.getElementById('asoc-buscar').value = rfc || '';
+    
+    const m = document.getElementById('modal-asociar-cfdi');
+    m.classList.remove('hidden');
+    m.classList.add('flex');
+    cargarCfdisParaAsociar();
+}
+
+function cerrarModalAsociar() {
+    const m = document.getElementById('modal-asociar-cfdi');
+    m.classList.add('hidden');
+    m.classList.remove('flex');
+    movActualId = null;
+}
+
+function buscarCfdisDebounced() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(cargarCfdisParaAsociar, 300);
+}
+
+async function cargarCfdisParaAsociar() {
+    if (!movActualId) return;
+    const buscar = document.getElementById('asoc-buscar').value.trim();
+    const contenedor = document.getElementById('asoc-contenedor-cfdis');
+    contenedor.innerHTML = '<div class="text-center py-6 text-slate-400 text-xs">Buscando facturas XML...</div>';
+
+    try {
+        const url = `/empresas/${empresaId}/cfdi/lista-json?movimiento_id=${movActualId}&buscar=${encodeURIComponent(buscar)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        
+        if (!data.ok || !data.cfdis || data.cfdis.length === 0) {
+            contenedor.innerHTML = '<div class="text-center py-8 text-slate-400 text-xs">No se encontraron facturas XML con ese criterio. Prueba borrando el texto de búsqueda.</div>';
+            return;
+        }
+
+        cfdisCargados = data.cfdis;
+        let tieneAsociados = false;
+        let html = '';
+
+        cfdisCargados.forEach(c => {
+            if (c.ya_asociado) tieneAsociados = true;
+            html += `
+            <div class="p-3 rounded-lg border ${c.ya_asociado ? 'bg-emerald-50/70 border-emerald-300' : 'bg-white border-slate-200'} hover:border-orange-300 transition-colors flex items-center justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <input type="checkbox" value="${c.id}" class="cfdi-checkbox w-4 h-4 text-orange-600 rounded" ${c.ya_asociado ? 'checked' : ''} onchange="actualizarContadorSeleccion()">
+                <div>
+                  <div class="font-bold text-slate-900 flex items-center gap-2">
+                    <span class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">${c.serie}${c.folio || 'S/F'}</span>
+                    <span class="text-slate-600 font-medium text-[11px]">${c.contraparte_nombre || c.contraparte_rfc}</span>
+                    ${c.ya_asociado ? '<span class="text-[10px] bg-emerald-600 text-white font-bold px-1.5 py-0.2 rounded">VINCULADA</span>' : ''}
+                  </div>
+                  <div class="text-[11px] text-slate-500 font-mono mt-0.5">
+                    Fecha: ${c.fecha} · UUID: ${c.uuid.substring(0, 13)}… · RFC: ${c.contraparte_rfc}
+                  </div>
+                </div>
+              </div>
+              <div class="text-right whitespace-nowrap">
+                <div class="font-mono font-bold text-sm text-slate-900">$${c.total.toFixed(2)}</div>
+                <div class="text-[10px] text-slate-400">Saldo pend: $${c.saldo.toFixed(2)}</div>
+                <button type="button" onclick="verDetalleXml(${c.id})" class="text-[10px] text-blue-600 hover:underline mt-0.5 font-semibold">
+                  👁️ Ver XML
+                </button>
+              </div>
+            </div>`;
+        });
+
+        contenedor.innerHTML = html;
+        actualizarContadorSeleccion();
+
+        const btnDesasoc = document.getElementById('btn-desasociar');
+        if (tieneAsociados) {
+            btnDesasoc.classList.remove('hidden');
+        } else {
+            btnDesasoc.classList.add('hidden');
+        }
+    } catch(e) {
+        contenedor.innerHTML = '<div class="text-center py-6 text-rose-500 text-xs">Error cargando facturas.</div>';
+    }
+}
+
+function actualizarContadorSeleccion() {
+    const chks = document.querySelectorAll('.cfdi-checkbox:checked');
+    document.getElementById('asoc-contador-seleccion').innerText = `${chks.length} factura(s) seleccionada(s)`;
+}
+
+async function confirmarAsociacion() {
+    if (!movActualId) return;
+    const chks = Array.from(document.querySelectorAll('.cfdi-checkbox:checked')).map(c => parseInt(c.value));
+    if (chks.length === 0) {
+        alert("Selecciona al menos una factura CFDI.");
+        return;
+    }
+
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/movimientos/${movActualId}/asociar-cfdi`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+            body: JSON.stringify({ cfdi_ids: chks })
+        });
+        const res = await resp.json();
+        if (res.ok) {
+            cerrarModalAsociar();
+            window.location.reload();
+        } else {
+            alert("Error: " + (res.error || "No se pudo asociar la factura."));
+        }
+    } catch(e) {
+        alert("Error de conexión al asociar.");
+    }
+}
+
+async function desasociarTodas() {
+    if (!movActualId) return;
+    if (!confirm("¿Deseas desvincular las facturas CFDI de este movimiento?")) return;
+
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/movimientos/${movActualId}/desasociar-cfdi`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+            body: JSON.stringify({})
+        });
+        const res = await resp.json();
+        if (res.ok) {
+            cerrarModalAsociar();
+            window.location.reload();
+        } else {
+            alert("Error al desvincular.");
+        }
+    } catch(e) {
+        alert("Error de conexión.");
+    }
+}
+
+async function verDetalleXml(cfdiId) {
+    const m = document.getElementById('modal-detalle-xml');
+    const cont = document.getElementById('detalle-xml-contenido');
+    m.classList.remove('hidden');
+    m.classList.add('flex');
+    cont.innerHTML = 'Cargando datos del comprobante...';
+
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/cfdi/${cfdiId}/detalle-json`);
+        const data = await resp.json();
+        if (!data.ok) {
+            cont.innerHTML = 'No se pudo obtener el detalle.';
+            return;
+        }
+        const c = data.cfdi;
+        let html = `
+        <div class="space-y-3">
+          <div class="flex justify-between border-b pb-2">
+            <div>
+              <span class="font-bold text-base text-slate-800">${c.serie}${c.folio}</span>
+              <span class="ml-2 text-xs text-slate-400">Tipo: ${c.tipo_comprobante}</span>
+            </div>
+            <div class="font-bold text-base text-emerald-700 font-mono">$${c.total.toFixed(2)} ${c.moneda}</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-slate-400 uppercase font-semibold">UUID Fiscal</div>
+            <div class="font-mono text-slate-700 font-semibold text-xs select-all">${c.uuid}</div>
+          </div>
+          <div class="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-lg border border-slate-200">
+            <div>
+              <div class="text-[10px] text-slate-400 uppercase font-semibold">Emisor</div>
+              <div class="font-bold text-slate-800">${c.rfc_emisor}</div>
+              <div class="text-slate-600 truncate">${c.nombre_emisor}</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-slate-400 uppercase font-semibold">Receptor</div>
+              <div class="font-bold text-slate-800">${c.rfc_receptor}</div>
+              <div class="text-slate-600 truncate">${c.nombre_receptor}</div>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-2 text-[11px]">
+            <div><strong>Fecha:</strong> ${c.fecha}</div>
+            <div><strong>Método pago:</strong> ${c.metodo_pago || 'PPD / PUE'}</div>
+            <div><strong>Subtotal:</strong> $${c.subtotal.toFixed(2)}</div>
+            <div><strong>Descuento:</strong> $${c.descuento.toFixed(2)}</div>
+          </div>`;
+
+        if (c.impuestos && c.impuestos.length > 0) {
+            html += `<div class="mt-2"><div class="font-bold mb-1">Impuestos:</div><ul class="space-y-1">`;
+            c.impuestos.forEach(i => {
+                html += `<li class="bg-slate-100 px-2 py-1 rounded flex justify-between">
+                    <span>${i.es_retencion ? 'Retención ' : 'Traslado '}${i.tipo_impuesto} (tasa ${i.tasa})</span>
+                    <span class="font-mono font-bold">$${i.importe.toFixed(2)}</span>
+                </li>`;
+            });
+            html += `</ul></div>`;
+        }
+
+        html += `</div>`;
+        cont.innerHTML = html;
+    } catch(e) {
+        cont.innerHTML = 'Error al cargar detalle del CFDI.';
+    }
+}
+</script>
+{% endblock %}

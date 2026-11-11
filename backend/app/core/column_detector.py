@@ -114,7 +114,7 @@ def detectar_columnas(df: pd.DataFrame, fila_encabezado: int = 0) -> dict:
         
     # 3. Detectar Importes
     candidatos_num = [c for c, data in scores_numerico.items() if data[2] > 0.4 and c != sugerencias.get("columna_fecha")]
-    candidatos_num.sort(key=lambda c: (1 if 'cargo' in c.lower() or 'abono' in c.lower() or 'importe' in c.lower() or 'retiro' in c.lower() or 'deposito' in c.lower() else 0, scores_numerico[c][2]), reverse=True)
+    candidatos_num.sort(key=lambda c: (1 if any(k in c.lower() for k in ('cargo', 'abono', 'importe', 'retiro', 'deposito', 'monto', 'total')) else 0, scores_numerico[c][2]), reverse=True)
     
     if len(candidatos_num) >= 2:
         sugerencias["formato"] = "columnas_separadas"
@@ -122,10 +122,10 @@ def detectar_columnas(df: pd.DataFrame, fila_encabezado: int = 0) -> dict:
         col1 = candidatos_num[0]
         col2 = candidatos_num[1]
         # Heuristica de nombre
-        if 'cargo' in col1.lower() or 'retiro' in col1.lower():
+        if 'cargo' in col1.lower() or 'retiro' in col1.lower() or 'egreso' in col1.lower():
             sugerencias["columna_egresos"] = col1
             sugerencias["columna_ingresos"] = col2
-        elif 'cargo' in col2.lower() or 'retiro' in col2.lower():
+        elif 'cargo' in col2.lower() or 'retiro' in col2.lower() or 'egreso' in col2.lower():
             sugerencias["columna_egresos"] = col2
             sugerencias["columna_ingresos"] = col1
         else:
@@ -139,7 +139,69 @@ def detectar_columnas(df: pd.DataFrame, fila_encabezado: int = 0) -> dict:
         else:
             sugerencias["formato"] = "valor_absoluto_y_tipo"
             sugerencias["columna_importe"] = col
-            
+
+    # 4. Detectar Columna de Tipo de Movimiento (para valor_absoluto_y_tipo)
+    candidatos_tipo = []
+    for col in df_datos.columns:
+        c_low = col.lower()
+        if col == sugerencias.get("columna_fecha") or col == sugerencias.get("columna_importe"):
+            continue
+        vals = [str(v).strip().upper() for v in df_datos[col].dropna()[:30]]
+        tiene_tipos = any(v in ("INGRESO", "EGRESO", "CARGO", "ABONO", "DEPOSITO", "RETIRO", "I", "E", "C", "A") for v in vals)
+        puntuacion = 0
+        if tiene_tipos:
+            puntuacion += 10
+        if any(k in c_low for k in ("tipo", "naturaleza", "concepto", "movimiento")):
+            puntuacion += 5
+        if puntuacion > 0:
+            candidatos_tipo.append((col, puntuacion))
+    if candidatos_tipo:
+        candidatos_tipo.sort(key=lambda x: x[1], reverse=True)
+        sugerencias["columna_tipo"] = candidatos_tipo[0][0]
+        if sugerencias.get("formato") != "columnas_separadas":
+            sugerencias["formato"] = "valor_absoluto_y_tipo"
+
+    # 5. Detectar Columna de Factura(s)
+    candidatos_fact = []
+    for col in df_datos.columns:
+        c_low = col.lower()
+        if col in (sugerencias.get("columna_fecha"), sugerencias.get("columna_importe"), sugerencias.get("columna_tipo")):
+            continue
+        if any(k in c_low for k in ("factura", "folio", "num de factura", "no. factura", "fac", "invoices")):
+            candidatos_fact.append(col)
+    if candidatos_fact:
+        sugerencias["columna_factura"] = candidatos_fact[0]
+
+    # 6. Detectar Columna de RFC
+    candidatos_rfc = []
+    for col in df_datos.columns:
+        c_low = col.lower()
+        if col in (sugerencias.get("columna_fecha"), sugerencias.get("columna_importe"), sugerencias.get("columna_tipo"), sugerencias.get("columna_factura")):
+            continue
+        # Revisar si se llama RFC o si sus valores parecen RFCs
+        vals = [str(v).strip().upper() for v in df_datos[col].dropna()[:30]]
+        import re
+        coincidencias_rfc = sum(1 for v in vals if re.search(r'[A-Z&Ñ]{3,4}\d{6}[A-V1-9][A-Z1-9][0-9A]', v))
+        puntuacion = (coincidencias_rfc / len(vals)) if vals else 0
+        if any(k in c_low for k in ("rfc", "tax_id", "denominacion", "contraparte", "proveedor", "cliente")):
+            puntuacion += 1.0
+        if puntuacion > 0.3:
+            candidatos_rfc.append((col, puntuacion))
+    if candidatos_rfc:
+        candidatos_rfc.sort(key=lambda x: x[1], reverse=True)
+        sugerencias["columna_rfc"] = candidatos_rfc[0][0]
+
+    # 7. Detectar Columna de Referencia Bancaria / Cheque / Rastreo
+    candidatos_ref = []
+    for col in df_datos.columns:
+        c_low = col.lower()
+        if col in (sugerencias.get("columna_fecha"), sugerencias.get("columna_importe"), sugerencias.get("columna_tipo"), sugerencias.get("columna_factura"), sugerencias.get("columna_rfc")):
+            continue
+        if any(k in c_low for k in ("referencia", "transaccion", "cheque", "autorizacion", "rastreo", "clave de rastreo")):
+            candidatos_ref.append(col)
+    if candidatos_ref:
+        sugerencias["columna_referencia"] = candidatos_ref[0]
+
     return sugerencias
 
 def detectar_fila_y_columnas(df: pd.DataFrame, filas_a_revisar: int = 20) -> tuple[int, dict]:

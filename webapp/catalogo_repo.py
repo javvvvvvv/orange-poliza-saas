@@ -151,11 +151,14 @@ def _guardar(empresa_id, filas):
 def listar(empresa_id, buscar=None):
     con = get_connection()
     if buscar:
-        patron = f"%{buscar}%"
+        buscar_str = str(buscar).strip()
+        buscar_limpio = buscar_str.replace("-", "").replace(".", "").replace(" ", "")
+        patron = f"%{buscar_str}%"
+        patron_limpio = f"%{buscar_limpio}%"
         filas = con.execute(
             """SELECT * FROM cuentas_catalogo WHERE empresa_id = ?
-               AND (cuenta ILIKE ? OR descripcion ILIKE ?) ORDER BY cuenta""",
-            (empresa_id, patron, patron),
+               AND (cuenta ILIKE ? OR REPLACE(cuenta, '-', '') ILIKE ? OR descripcion ILIKE ?) ORDER BY cuenta""",
+            (empresa_id, patron, patron_limpio, patron),
         ).fetchall()
     else:
         filas = con.execute(
@@ -163,6 +166,28 @@ def listar(empresa_id, buscar=None):
         ).fetchall()
     con.close()
     return filas
+
+
+def buscar_cuenta_exacta(empresa_id, cuenta_str):
+    """
+    Busca una cuenta en el catálogo ya sea con o sin guiones, puntos o espacios.
+    Ej. si busca '118-01-000' y en la BD está '11801000' (o viceversa), la encuentra.
+    """
+    if not cuenta_str:
+        return None
+    cuenta_clean = str(cuenta_str).replace("-", "").replace(".", "").replace(" ", "").strip()
+    with get_connection() as con:
+        fila = con.execute(
+            "SELECT * FROM cuentas_catalogo WHERE empresa_id = ? AND cuenta = ?",
+            (empresa_id, str(cuenta_str).strip())
+        ).fetchone()
+        if fila:
+            return fila
+        fila = con.execute(
+            "SELECT * FROM cuentas_catalogo WHERE empresa_id = ? AND REPLACE(REPLACE(cuenta, '-', ''), ' ', '') = ?",
+            (empresa_id, cuenta_clean)
+        ).fetchone()
+        return fila
 
 
 def eliminar_todo(empresa_id):

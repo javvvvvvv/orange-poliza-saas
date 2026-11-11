@@ -190,29 +190,38 @@ def pendientes_siguiente(empresa_id):
             (movimiento["documento_id"], empresa_id),
         ).fetchone()
 
+        if not banco:
+            # Fallback automático al primer banco configurado con cuenta contable de la empresa
+            banco = con.execute(
+                "SELECT * FROM bancos WHERE empresa_id = ? AND cuenta_contable IS NOT NULL AND cuenta_contable != '' ORDER BY id ASC LIMIT 1",
+                (empresa_id,),
+            ).fetchone()
+
         regla_sugerida = None
         if movimiento["regla_id"]:
             regla_sugerida = con.execute(
                 "SELECT id, nombre FROM reglas WHERE id = ?", (movimiento["regla_id"],)
             ).fetchone()
 
-        # Si ya hay un CFDI confirmado para este movimiento, el sistema ya
+        # Si ya hay uno o varios CFDIs confirmados para este movimiento, el sistema ya
         # conoce el RFC y los impuestos exactos: no hace falta preguntar
         # IVA ni afectable, solo la cuenta contable del cliente/proveedor.
-        cfdi_info = con.execute(
-            """SELECT c.serie, c.folio, c.rfc_emisor, c.nombre_emisor, c.rfc_receptor, c.nombre_receptor, c.total,
+        cfdis_asociados = con.execute(
+            """SELECT c.id, c.uuid, c.serie, c.folio, c.rfc_emisor, c.nombre_emisor, c.rfc_receptor, c.nombre_receptor, c.total,
+                      cm.importe_aplicado, cm.motivo,
                       ci.base, ci.importe AS iva_importe, ci.tasa
                FROM cfdi_movimiento cm
                JOIN cfdis c ON c.id = cm.cfdi_id
                LEFT JOIN cfdi_impuestos ci ON ci.cfdi_id = c.id
-               WHERE cm.movimiento_id = ? AND cm.confirmado = 1
-               LIMIT 1""",
+               WHERE cm.movimiento_id = ? AND cm.confirmado = 1""",
             (movimiento["id"],),
-        ).fetchone()
+        ).fetchall()
+        cfdi_info = cfdis_asociados[0] if cfdis_asociados else None
 
     return render_template(
         "pendientes_siguiente.html", movimiento=movimiento, sugerencia=sugerencia,
         cuentas=cuentas, empresa=empresa, banco=banco, cfdi_info=cfdi_info,
+        cfdis_asociados=cfdis_asociados,
         regla_sugerida=regla_sugerida,
         total_pendientes=total_pendientes,
         restantes=total_pendientes - len(omitidos),
@@ -278,6 +287,20 @@ def pendiente_asignar_rapido(empresa_id, movimiento_id):
 
     cuenta_contraparte = request.form["cuenta_contraparte"].strip()
     cuenta_banco = request.form.get("cuenta_banco", "").strip()
+    if not cuenta_banco:
+        with get_connection() as con_b:
+            b_row = con_b.execute(
+                """SELECT b.cuenta_contable FROM bancos b JOIN documentos_importados d ON d.banco_id = b.id
+                   WHERE d.id = ? AND d.empresa_id = ?""",
+                (movimiento["documento_id"], empresa_id),
+            ).fetchone()
+            if not b_row or not b_row["cuenta_contable"]:
+                b_row = con_b.execute(
+                    "SELECT cuenta_contable FROM bancos WHERE empresa_id = ? AND cuenta_contable IS NOT NULL AND cuenta_contable != '' ORDER BY id ASC LIMIT 1",
+                    (empresa_id,),
+                ).fetchone()
+            if b_row and b_row["cuenta_contable"]:
+                cuenta_banco = b_row["cuenta_contable"]
     aplicar_a = request.form.get("aplicar_a", "solo_similares")  # 'solo_este' | 'solo_similares'
 
     if tiene_cfdi:

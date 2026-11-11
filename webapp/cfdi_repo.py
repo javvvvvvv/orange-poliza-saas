@@ -184,9 +184,8 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
         # Solo se auto-confirma si es coincidencia exacta 1:1, confianza >= 95 y candidato único.
         # Todo lo ambiguo, parcial o sin RFC va a revisión (confirmado = 0).
         auto_confirmar = (
-            propuesta.tipo_match == "exacto"
+            (propuesta.tipo_match in ("exacto", "combinado_facturas"))
             and propuesta.confianza >= UMBRAL_AUTOCONFIRMAR
-            and len(propuesta.cfdis) == 1
             and len(propuesta.movimientos) == 1
         )
 

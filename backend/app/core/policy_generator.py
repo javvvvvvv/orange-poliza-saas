@@ -207,6 +207,7 @@ def generar_poliza(
             )
             continue
 
+        _sin_g = lambda c: str(c or "").replace("-", "").replace(".", "").replace(" ", "").strip()
         if cuenta_plantilla == TOKEN_BANCO:
             if not cuenta_banco_movimiento:
                 resultado.errores.append(
@@ -218,9 +219,10 @@ def generar_poliza(
             es_banco = True
         else:
             cuenta = linea_plantilla.cuenta
-            es_banco = cuenta_plantilla == cuenta_banco_movimiento
+            es_banco = _sin_g(cuenta_plantilla) == _sin_g(cuenta_banco_movimiento)
 
-        if cuenta_plantilla in cuentas_otros_bancos:
+        cuentas_otros_bancos_norm = {_sin_g(c) for c in cuentas_otros_bancos}
+        if _sin_g(cuenta_plantilla) in cuentas_otros_bancos_norm and not es_banco:
             resultado.errores.append(
                 f"La regla usa la cuenta {linea_plantilla.cuenta}, que es de otro banco distinto al del movimiento."
             )

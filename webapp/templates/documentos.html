@@ -164,6 +164,7 @@
               <th class="px-3 py-2 font-semibold">Descripción / Concepto</th>
               <th class="px-3 py-2 font-semibold">Importe ($)</th>
               <th class="px-3 py-2 font-semibold">RFC Contraparte</th>
+              <th class="px-3 py-2 font-semibold">Factura(s) / Folio</th>
               <th class="px-3 py-2 font-semibold">Referencia</th>
               <th class="px-3 py-2 font-semibold text-center">Acción</th>
             </tr>
@@ -242,6 +243,9 @@ function renderizarMovimientosModal(movimientos) {
           <input type="text" id="rfc-${m.id}" value="${escapeHtml(m.rfc_contraparte)}" placeholder="RFC..." maxlength="13" class="border border-slate-300 rounded px-2 py-1 text-xs w-28 uppercase font-mono focus:ring-1 focus:ring-orange-500">
         </td>
         <td class="px-3 py-2 whitespace-nowrap">
+          <input type="text" id="fact-${m.id}" value="${escapeHtml(m.numero_factura || '')}" placeholder="Factura(s)..." class="border border-slate-300 rounded px-2 py-1 text-xs w-28 font-mono focus:ring-1 focus:ring-orange-500">
+        </td>
+        <td class="px-3 py-2 whitespace-nowrap">
           <input type="text" id="ref-${m.id}" value="${escapeHtml(m.referencia)}" placeholder="Ref..." class="border border-slate-300 rounded px-2 py-1 text-xs w-24 font-mono focus:ring-1 focus:ring-orange-500">
         </td>
         <td class="px-3 py-2 text-center whitespace-nowrap">
@@ -267,6 +271,7 @@ async function guardarMovimiento(movimientoId) {
   const descripcion = document.getElementById(`desc-${movimientoId}`).value;
   const total = document.getElementById(`total-${movimientoId}`).value;
   const rfc_contraparte = document.getElementById(`rfc-${movimientoId}`).value;
+  const numero_factura = document.getElementById(`fact-${movimientoId}`).value;
   const referencia = document.getElementById(`ref-${movimientoId}`).value;
 
   btn.disabled = true;
@@ -280,7 +285,7 @@ async function guardarMovimiento(movimientoId) {
         'X-CSRFToken': csrfToken,
       },
       body: JSON.stringify({
-        fecha, tipo, descripcion, total, rfc_contraparte, referencia
+        fecha, tipo, descripcion, total, rfc_contraparte, referencia, numero_factura
       })
     });
 

@@ -65,6 +65,93 @@ def _combinaciones_que_suman(indices_y_montos, objetivo, tolerancia=0.01, max_it
                 return [i for i, _ in combo]
     return None
 
+def extraer_tokens_facturas(texto_raw: str) -> list[dict]:
+    """
+    Extrae folios, series+folios y fragmentos de factura de un texto libre o campo
+    de número de factura. Soporta separadores comunes como '/', ',', ';', '&', ' y ',
+    saltos de línea, y prefijos como 'A CUENTA', 'A CTA', 'PAGO FACTURAS', 'FACTURA', etc.
+    """
+    if not texto_raw:
+        return []
+    import re
+    texto = str(texto_raw).strip()
+    partes_crudas = re.split(r'[\r\n|,;]+|\s+/\s+|\s*[/]+\s*|\s+y\s+|\s+e\s+|\s*&\s*', texto, flags=re.IGNORECASE)
+    
+    tokens = []
+    serie_contexto = ""
+
+    for parte in partes_crudas:
+        p = parte.strip()
+        if not p:
+            continue
+        p_sin_prefijo = re.sub(
+            r'^(?:A\s+CUENTA|A\s+CTA|PAGO\s+FACTURAS?|PAGO\s+A\s+CTA|PAGO|FACTURAS?|FAC\.?|FOLIO|REF)\s+',
+            '', p, flags=re.IGNORECASE
+        ).strip()
+        if not p_sin_prefijo:
+            p_sin_prefijo = p
+
+        limpio = re.sub(r'[^a-zA-Z0-9]', '', p_sin_prefijo).upper()
+        if not limpio or len(limpio) < 2:
+            continue
+
+        m1 = re.match(r'^([A-Z]+)\s*(\d+)$', p_sin_prefijo, flags=re.IGNORECASE)
+        m2 = re.match(r'^(\d+)\s*([A-Z]+)$', p_sin_prefijo, flags=re.IGNORECASE)
+        m3 = re.match(r'^\d+$', p_sin_prefijo)
+
+        serie = ""
+        folio = ""
+        if m1:
+            serie = m1.group(1).upper()
+            folio = m1.group(2)
+            serie_contexto = serie
+        elif m2:
+            folio = m2.group(1)
+            serie = m2.group(2).upper()
+        elif m3:
+            folio = p_sin_prefijo
+            serie = serie_contexto
+        else:
+            folio = limpio
+
+        tokens.append({
+            "raw": p,
+            "limpio": limpio,
+            "serie": serie,
+            "folio": folio,
+            "solo_digitos": re.sub(r'\D', '', p_sin_prefijo),
+        })
+
+    return tokens
+
+
+def cfdi_coincide_con_token(cfdi: CFDI, token: dict) -> bool:
+    import re
+    folio_limpio = re.sub(r'[^a-zA-Z0-9]', '', cfdi.folio or "").upper()
+    serie_limpia = re.sub(r'[^a-zA-Z0-9]', '', cfdi.serie or "").upper()
+    uuid_limpio = re.sub(r'[^a-zA-Z0-9]', '', cfdi.uuid or "").upper()
+
+    if token["limpio"] in (serie_limpia + folio_limpio, folio_limpio + serie_limpia):
+        return True
+
+    if token["folio"] and len(token["folio"]) >= 2 and token["folio"] == folio_limpio:
+        if token["serie"] and serie_limpia:
+            return token["serie"] == serie_limpia
+        return True
+
+    if token["solo_digitos"] and len(token["solo_digitos"]) >= 3:
+        cfdi_digitos = re.sub(r'\D', '', cfdi.folio or "")
+        if token["solo_digitos"] == cfdi_digitos:
+            if token["serie"] and serie_limpia:
+                return token["serie"] == serie_limpia
+            return True
+
+    if len(token["limpio"]) >= 8 and (uuid_limpio.startswith(token["limpio"]) or token["limpio"] == uuid_limpio):
+        return True
+
+    return False
+
+
 def conciliar_avanzado(
     cfdis: list[CFDI],
     movimientos: list[dict],
@@ -80,56 +167,72 @@ def conciliar_avanzado(
 
     import re
     movs_conciliados_por_folio = set()
+    cfdis_usados_en_folios = set()
+
+    # PASO 1: Búsqueda y asociación directa por número(s) de factura (soporta múltiples facturas)
     for i, mov in enumerate(movimientos):
         num_fact_raw = str(mov.get("numero_factura") or "").strip()
-        num_fact_limpio = re.sub(r'[^a-zA-Z0-9]', '', num_fact_raw).upper()
-        if not num_fact_limpio:
+        tokens = extraer_tokens_facturas(num_fact_raw)
+
+        # Fallback: si no trae columna de factura explícita, revisar en la descripción o referencia
+        if not tokens:
+            desc = str(mov.get("descripcion") or "")
+            ref = str(mov.get("referencia") or "")
+            texto_alt = f"{desc} {ref}"
+            m_fact = re.search(r'(?:FACTURAS?|FAC\.?|FOLIOS?)\s*[:#]?\s*([A-Za-z0-9\s/,-]+)', texto_alt, flags=re.IGNORECASE)
+            if m_fact:
+                tokens = extraer_tokens_facturas(m_fact.group(1))
+
+        if not tokens:
             continue
+
         rfc_mov = (mov.get("rfc_contraparte") or "").strip().upper()
         if rfc_mov in {"ND", "N/A", "NA", "N.D.", "N.A.", "XAXX010101000", "XEXX010101000", "000000000000", "XXX"}:
             rfc_mov = ""
 
-        for cfdi in cfdis:
-            # Excluir comprobantes que no son facturas ni pagos (ej. Nómina 'N', Traslado 'T', Egreso 'E')
-            if getattr(cfdi, "tipo_comprobante", "I") not in ("I", "P"):
-                continue
-
-            tipo = tipo_por_uuid.get(cfdi.uuid) or clasificar_cfdi(cfdi, rfc_empresa)
-            if tipo != "desconocido":
-                tipo_mov_esperado = "ingreso" if tipo == "emitido" else "egreso"
-                if mov["tipo"] != tipo_mov_esperado:
+        cfdis_coincidentes = []
+        for token in tokens:
+            for cfdi in cfdis:
+                if cfdi.uuid in cfdis_usados_en_folios:
+                    continue
+                if getattr(cfdi, "tipo_comprobante", "I") not in ("I", "P"):
                     continue
 
-            rfc_contraparte = cfdi.rfc_receptor if tipo == "emitido" else cfdi.rfc_emisor
-            # REGLA DURA: Si el movimiento trae RFC, no puede casarse con CFDI de otro RFC
-            if rfc_mov and rfc_mov != rfc_contraparte:
-                continue
+                tipo = tipo_por_uuid.get(cfdi.uuid) or clasificar_cfdi(cfdi, rfc_empresa)
+                if tipo != "desconocido":
+                    tipo_mov_esperado = "ingreso" if tipo == "emitido" else "egreso"
+                    if mov["tipo"] != tipo_mov_esperado:
+                        continue
 
-            folio_limpio = re.sub(r'[^a-zA-Z0-9]', '', cfdi.folio or "").upper()
-            serie_limpia = re.sub(r'[^a-zA-Z0-9]', '', cfdi.serie or "").upper()
-            uuid_limpio = re.sub(r'[^a-zA-Z0-9]', '', cfdi.uuid or "").upper()
+                rfc_contraparte = cfdi.rfc_receptor if tipo == "emitido" else cfdi.rfc_emisor
+                if rfc_mov and rfc_mov != rfc_contraparte:
+                    continue
 
-            coincide_folio = False
-            # Exigir que el folio no sea ambiguo (mínimo 2 caracteres o coincidencia con serie)
-            if folio_limpio and len(folio_limpio) >= 2 and num_fact_limpio == folio_limpio:
-                coincide_folio = True
-            elif (serie_limpia or folio_limpio) and num_fact_limpio == (serie_limpia + folio_limpio):
-                coincide_folio = True
-            elif len(num_fact_limpio) >= 8 and (num_fact_limpio == uuid_limpio or uuid_limpio.startswith(num_fact_limpio)):
-                coincide_folio = True
+                if cfdi_coincide_con_token(cfdi, token):
+                    cfdis_coincidentes.append(cfdi)
+                    cfdis_usados_en_folios.add(cfdi.uuid)
+                    break
 
-            if coincide_folio:
-                importe_aplicar = min(float(mov["total"]), float(cfdi.total)) if cfdi.total else float(mov["total"])
-                propuestas.append(PropuestaConciliacion(
-                    tipo_match="exacto",
-                    confianza=_CFG["cf"].get("exacto", 100),
-                    motivo=f"Asociación directa por número de factura ({cfdi.serie or ''}{cfdi.folio or ''}) en el movimiento.",
-                    cfdis=[cfdi],
-                    movimientos=[mov],
-                    aplicaciones=[AplicacionCFDI(cfdi, mov, importe_aplicar)],
-                ))
-                movs_conciliados_por_folio.add(id(mov))
-                break
+        if cfdis_coincidentes:
+            saldo_mov = float(mov["total"])
+            aplicaciones = []
+            for c in cfdis_coincidentes:
+                c_tot = float(c.total or 0.0)
+                monto_aplicar = min(c_tot, saldo_mov) if c_tot > 0 else saldo_mov
+                aplicaciones.append(AplicacionCFDI(c, mov, monto_aplicar))
+                saldo_mov = max(0.0, saldo_mov - monto_aplicar)
+
+            tipo_match = "exacto" if len(cfdis_coincidentes) == 1 else "combinado_facturas"
+            folios_desc = ", ".join(f"{c.serie or ''}{c.folio or ''}".strip() for c in cfdis_coincidentes)
+            propuestas.append(PropuestaConciliacion(
+                tipo_match=tipo_match,
+                confianza=100,
+                motivo=f"Asociación directa por {len(cfdis_coincidentes)} factura(s) ({folios_desc}) en el movimiento.",
+                cfdis=cfdis_coincidentes,
+                movimientos=[mov],
+                aplicaciones=aplicaciones,
+            ))
+            movs_conciliados_por_folio.add(id(mov))
 
     grupos = {}  # (tipo_mov_esperado, rfc_contraparte) -> {"cfdis": [...], "movs": [(idx, mov), ...]}
 

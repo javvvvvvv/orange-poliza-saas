@@ -29,7 +29,11 @@ TAMANO_LOTE = 1000
 
 
 _SQL_MOVIMIENTOS_CON_BANCO = """
-    SELECT m.*, b.cuenta_contable AS cuenta_banco
+    SELECT m.*, 
+           COALESCE(
+               b.cuenta_contable,
+               (SELECT b2.cuenta_contable FROM bancos b2 WHERE b2.empresa_id = m.empresa_id AND b2.cuenta_contable IS NOT NULL AND b2.cuenta_contable != '' ORDER BY b2.id ASC LIMIT 1)
+           ) AS cuenta_banco
     FROM movimientos m
     LEFT JOIN documentos_importados d ON d.id = m.documento_id
     LEFT JOIN bancos b ON b.id = d.banco_id

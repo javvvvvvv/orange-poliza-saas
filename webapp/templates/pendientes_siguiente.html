@@ -48,30 +48,54 @@
     <div class="text-2xl font-semibold text-marino-900">${{ "%.2f"|format(movimiento.total) }}</div>
   </div>
 
-  {% if cfdi_info %}
+  {% if cfdis_asociados %}
   <div class="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 mb-4 text-sm shadow-sm">
     <div class="flex justify-between items-start mb-2 border-b border-emerald-100 pb-2">
-      <div class="font-medium text-emerald-800 flex items-center gap-2">
+      <div class="font-bold text-emerald-800 flex items-center gap-2">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-        Factura Asociada: {{ cfdi_info.serie or '' }} {{ cfdi_info.folio or '' }}
+        Factura(s) Asociada(s) ({{ cfdis_asociados|length }}):
       </div>
-      <div class="text-emerald-700 font-medium">Total: ${{ "%.2f"|format(cfdi_info.total or 0) }}</div>
+      <div class="flex items-center gap-2">
+        <button type="button" onclick="abrirModalAsociarDirecto()" class="text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1 rounded shadow-sm">
+          + Agregar / Modificar XML
+        </button>
+      </div>
     </div>
-    <div class="grid grid-cols-2 gap-2 text-xs text-emerald-700 mb-2">
+    <div class="space-y-2 mb-2">
+      {% for c in cfdis_asociados %}
+      <div class="flex items-center justify-between text-xs text-emerald-900 bg-white/70 p-2 rounded border border-emerald-200">
         <div>
-          <strong>Emisor:</strong> {{ cfdi_info.rfc_emisor }}
-          {% if movimiento.tipo == 'egreso' and cfdi_info.nombre_emisor %}<br><span class="text-[10px]">{{ cfdi_info.nombre_emisor }}</span>{% endif %}
+          <span class="font-bold font-mono">{{ c.serie or '' }}{{ c.folio or 'S/F' }}</span>
+          <span class="text-emerald-700 ml-2 font-mono">UUID: {{ c.uuid[:13] }}…</span>
+          <span class="ml-2 font-semibold">Total: ${{ "%.2f"|format(c.total or 0) }}</span>
+          <span class="text-emerald-600 text-[11px] ml-1">({{ c.rfc_emisor if movimiento.tipo == 'egreso' else c.rfc_receptor }})</span>
         </div>
-        <div>
-          <strong>Receptor:</strong> {{ cfdi_info.rfc_receptor }}
-          {% if movimiento.tipo == 'ingreso' and cfdi_info.nombre_receptor %}<br><span class="text-[10px]">{{ cfdi_info.nombre_receptor }}</span>{% endif %}
-        </div>
+        <button type="button" onclick="desasociarUnCfdi({{ c.id }})" class="text-rose-600 hover:text-rose-800 font-bold text-[11px]">
+          ✕ Quitar
+        </button>
+      </div>
+      {% endfor %}
     </div>
+    {% if cfdi_info.iva_importe %}
     <div class="text-xs text-emerald-600 bg-emerald-100/50 rounded p-2">
       Base ${{ "%.2f"|format(cfdi_info.base or 0) }} — IVA ${{ "%.2f"|format(cfdi_info.iva_importe or 0) }}
       ({{ ((cfdi_info.tasa or 0) * 100)|round(0, 'floor')|int }}%). 
-      <br><em>No hace falta que confirmes IVA, el sistema lo cuadrará automáticamente.</em>
+      <br><em>No hace falta que captures IVA; el sistema lo calcula y cuadra automáticamente con el XML.</em>
     </div>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-4 text-sm shadow-sm flex items-center justify-between">
+    <div class="flex items-center gap-2 text-amber-800">
+      <span class="text-base">⚠</span>
+      <div>
+        <div class="font-bold text-xs">Sin Factura XML (CFDI) Asociada</div>
+        <div class="text-[11px] text-amber-700">Puedes vincular facturas XML para deducir impuestos y cuadrar con el SAT.</div>
+      </div>
+    </div>
+    <button type="button" onclick="abrirModalAsociarDirecto()" class="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold shadow-sm transition-colors flex items-center gap-1">
+      <span>🔍</span> Ver XMLs y Asociar
+    </button>
   </div>
   {% endif %}
 
@@ -173,16 +197,30 @@
   </div>
   {% endif %}
 
-  <label class="block text-sm text-slate-600 mb-1">Cuenta de banco (la contrapartida de este movimiento)</label>
-      <input name="cuenta_banco" list="cuentas-catalogo"
-             value="{{ banco.cuenta_contable if banco else '' }}"
-             class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono">
-      {% if not banco %}
-      <div class="text-xs text-amber-600 mt-1">
-        Este documento no tiene banco asignado; escribe la cuenta contable manualmente.
+    <!-- BANCO CONFIGURADO (Ya no se pide capturar cada vez) -->
+    <div class="bg-slate-50 border border-slate-200 rounded-lg p-3 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="text-lg">🏦</span>
+        <div>
+          <div class="text-[11px] text-slate-500 uppercase font-semibold">Banco asignado a este movimiento</div>
+          <div class="text-xs font-bold text-marino-900 font-mono">
+            {{ banco.nombre if banco else 'Banco Empresa' }} · Cuenta Contable: {{ banco.cuenta_contable if banco else '10201001' }}
+          </div>
+        </div>
       </div>
-      {% endif %}
+      <button type="button" onclick="document.getElementById('div-cambiar-banco').classList.toggle('hidden')" class="text-[11px] text-slate-500 hover:text-slate-800 underline font-semibold">
+        Modificar cuenta banco
+      </button>
     </div>
+    <div id="div-cambiar-banco" class="hidden p-3 bg-amber-50 border border-amber-200 rounded-lg">
+      <label class="block text-xs font-bold text-amber-900 mb-1">Cuenta de banco alternativa (contrapartida)</label>
+      <input name="cuenta_banco" list="cuentas-catalogo" value="{{ banco.cuenta_contable if banco else '' }}" class="w-full border border-amber-300 rounded-lg px-3 py-2 text-xs font-mono bg-white">
+      <p class="text-[10px] text-amber-700 mt-1">Solo modifica esto si este movimiento corresponde a una cuenta bancaria distinta a la del documento.</p>
+    </div>
+    {% if not banco %}
+    <input type="hidden" name="cuenta_banco" value="">
+    {% endif %}
+  </div>
 
     <div class="bg-slate-50 rounded-lg p-3">
       <div class="text-xs text-slate-500 mb-2">Aplicar esta cuenta a...</div>
@@ -212,5 +250,173 @@
     <button class="text-xs text-slate-400 hover:text-slate-600">Omitir por ahora, ver el siguiente</button>
   </form>
 </div>
+{% endif %}
+
+<!-- MODAL ASOCIAR CFDI DIRECTAMENTE DESDE PENDIENTES -->
+{% if movimiento %}
+<div id="modal-asociar-cfdi" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden border border-slate-200 flex flex-col max-h-[90vh]">
+    <div class="px-6 py-4 bg-marino-900 text-white flex items-center justify-between">
+      <div>
+        <h3 class="font-bold text-base flex items-center gap-2">
+          <span>🔍</span> Vincular Facturas XML (CFDI) a este Movimiento
+        </h3>
+        <p class="text-xs text-slate-300 mt-0.5">
+          Movimiento #{{ movimiento.id }} ({{ movimiento.tipo|upper }} ${{ "%.2f"|format(movimiento.total) }}) · RFC: {{ movimiento.rfc_contraparte or 'Sin RFC' }}
+        </p>
+      </div>
+      <button type="button" onclick="cerrarModalAsociarDirecto()" class="text-slate-400 hover:text-white text-lg">✕</button>
+    </div>
+
+    <div class="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-3">
+      <div class="flex-1 relative">
+        <input type="text" id="modal-asoc-buscar" oninput="buscarCfdisDebounced()"
+               placeholder="Buscar por Folio, Serie, UUID, RFC o Nombre..."
+               value="{{ movimiento.rfc_contraparte or '' }}"
+               class="w-full border border-slate-300 rounded-lg pl-8 pr-3 py-2 text-xs focus:ring-2 focus:ring-orange-500 focus:outline-none">
+        <span class="absolute left-2.5 top-2 text-slate-400 text-xs">🔍</span>
+      </div>
+      <button type="button" onclick="cargarCfdisDirecto()" class="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold">
+        Buscar
+      </button>
+    </div>
+
+    <div class="flex-1 overflow-y-auto p-4 space-y-2" id="modal-asoc-contenedor">
+      <div class="text-center py-6 text-slate-400 text-xs">Cargando facturas XML disponibles...</div>
+    </div>
+
+    <div class="px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+      <div class="text-xs text-slate-500" id="modal-asoc-contador">
+        0 factura(s) seleccionada(s)
+      </div>
+      <div class="flex items-center gap-2">
+        <button type="button" onclick="cerrarModalAsociarDirecto()" class="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-100">
+          Cancelar
+        </button>
+        <button type="button" onclick="guardarAsociacionDirecto()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm">
+          ✅ Asociar Facturas Seleccionadas
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const empresaId = {{ request.view_args.empresa_id }};
+const movimientoId = {{ movimiento.id }};
+const csrfToken = "{{ csrf_token() }}";
+let debounceTimer = null;
+
+function abrirModalAsociarDirecto() {
+    const m = document.getElementById('modal-asociar-cfdi');
+    m.classList.remove('hidden');
+    m.classList.add('flex');
+    cargarCfdisDirecto();
+}
+
+function cerrarModalAsociarDirecto() {
+    const m = document.getElementById('modal-asociar-cfdi');
+    m.classList.add('hidden');
+    m.classList.remove('flex');
+}
+
+function buscarCfdisDebounced() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(cargarCfdisDirecto, 300);
+}
+
+async function cargarCfdisDirecto() {
+    const buscar = document.getElementById('modal-asoc-buscar').value.trim();
+    const cont = document.getElementById('modal-asoc-contenedor');
+    cont.innerHTML = '<div class="text-center py-6 text-slate-400 text-xs">Buscando comprobantes...</div>';
+
+    try {
+        const url = `/empresas/${empresaId}/cfdi/lista-json?movimiento_id=${movimientoId}&buscar=${encodeURIComponent(buscar)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+
+        if (!data.ok || !data.cfdis || data.cfdis.length === 0) {
+            cont.innerHTML = '<div class="text-center py-8 text-slate-400 text-xs">No se encontraron facturas XML con ese criterio. Prueba limpiando el campo de búsqueda.</div>';
+            return;
+        }
+
+        let html = '';
+        data.cfdis.forEach(c => {
+            html += `
+            <div class="p-3 rounded-lg border ${c.ya_asociado ? 'bg-emerald-50/70 border-emerald-300' : 'bg-white border-slate-200'} hover:border-orange-300 transition-colors flex items-center justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <input type="checkbox" value="${c.id}" class="cfdi-chk w-4 h-4 text-orange-600 rounded" ${c.ya_asociado ? 'checked' : ''} onchange="actualizarContadorDirecto()">
+                <div>
+                  <div class="font-bold text-slate-900 flex items-center gap-2">
+                    <span class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">${c.serie}${c.folio || 'S/F'}</span>
+                    <span class="text-slate-600 font-medium text-[11px]">${c.contraparte_nombre || c.contraparte_rfc}</span>
+                    ${c.ya_asociado ? '<span class="text-[10px] bg-emerald-600 text-white font-bold px-1.5 py-0.2 rounded">YA ASOCIADA</span>' : ''}
+                  </div>
+                  <div class="text-[11px] text-slate-500 font-mono mt-0.5">
+                    Fecha: ${c.fecha} · UUID: ${c.uuid.substring(0, 13)}… · RFC: ${c.contraparte_rfc}
+                  </div>
+                </div>
+              </div>
+              <div class="text-right whitespace-nowrap">
+                <div class="font-mono font-bold text-sm text-slate-900">$${c.total.toFixed(2)}</div>
+                <div class="text-[10px] text-slate-400">Saldo: $${c.saldo.toFixed(2)}</div>
+              </div>
+            </div>`;
+        });
+        cont.innerHTML = html;
+        actualizarContadorDirecto();
+    } catch(e) {
+        cont.innerHTML = '<div class="text-center py-6 text-rose-500 text-xs">Error al cargar facturas.</div>';
+    }
+}
+
+function actualizarContadorDirecto() {
+    const chks = document.querySelectorAll('.cfdi-chk:checked');
+    document.getElementById('modal-asoc-contador').innerText = `${chks.length} factura(s) seleccionada(s)`;
+}
+
+async function guardarAsociacionDirecto() {
+    const chks = Array.from(document.querySelectorAll('.cfdi-chk:checked')).map(c => parseInt(c.value));
+    if (chks.length === 0) {
+        alert("Selecciona al menos una factura CFDI.");
+        return;
+    }
+
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/movimientos/${movimientoId}/asociar-cfdi`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+            body: JSON.stringify({ cfdi_ids: chks })
+        });
+        const res = await resp.json();
+        if (res.ok) {
+            window.location.reload();
+        } else {
+            alert("Error: " + (res.error || "No se pudo asociar."));
+        }
+    } catch(e) {
+        alert("Error de conexión al asociar.");
+    }
+}
+
+async function desasociarUnCfdi(cfdiId) {
+    if (!confirm("¿Deseas desvincular esta factura del movimiento?")) return;
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/movimientos/${movimientoId}/desasociar-cfdi`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+            body: JSON.stringify({ cfdi_id: cfdiId })
+        });
+        const res = await resp.json();
+        if (res.ok) {
+            window.location.reload();
+        } else {
+            alert("Error al desvincular.");
+        }
+    } catch(e) {
+        alert("Error de conexión.");
+    }
+}
+</script>
 {% endif %}
 {% endblock %}

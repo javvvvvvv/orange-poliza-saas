@@ -166,17 +166,19 @@
     </div>
 
     <div>
-      <label class="block text-sm text-slate-600 mb-1">Banco (opcional)</label>
-      <select name="banco_id" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
-        <option value="">Sin asignar</option>
+      <label class="block text-sm text-slate-600 mb-1">Banco asociado al estado de cuenta *</label>
+      <select name="banco_id" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-medium">
+        {% if not bancos %}
+        <option value="">Sin bancos configurados</option>
+        {% endif %}
         {% for b in bancos %}
-        <option value="{{ b.id }}">{{ b.nombre }} ({{ b.cuenta_contable }})</option>
+        <option value="{{ b.id }}" {% if loop.first %}selected{% endif %}>{{ b.nombre }} (Cuenta contable: {{ b.cuenta_contable or 'Sin cuenta' }})</option>
         {% endfor %}
       </select>
       {% if not bancos %}
       <div class="text-xs text-amber-600 mt-1">
         No tienes bancos configurados todavía.
-        <a href="/empresas/{{ request.view_args.empresa_id }}/configuracion" class="underline">Configúralos aquí</a> (opcional, pero recomendado).
+        <a href="/empresas/{{ request.view_args.empresa_id }}/configuracion" class="underline font-bold">Configúralos aquí</a> para que se asignen automáticamente las cuentas contables.
       </div>
       {% endif %}
     </div>
