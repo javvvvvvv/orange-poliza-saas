@@ -337,7 +337,7 @@
         <button type="button" onclick="cerrarModalAsociarDirecto()" class="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-100">
           Cancelar
         </button>
-        <button type="button" onclick="guardarAsociacionDirecto()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm">
+        <button type="button" id="modal-asoc-btn-guardar" onclick="guardarAsociacionDirecto()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm">
           ✅ Asociar Facturas Seleccionadas
         </button>
       </div>
@@ -444,10 +444,16 @@ function actualizarContadorDirecto() {
 }
 
 async function guardarAsociacionDirecto() {
-    const chks = Array.from(document.querySelectorAll('.cfdi-chk:checked')).map(c => parseInt(c.value));
+    const chks = Array.from(new Set(Array.from(document.querySelectorAll('.cfdi-chk:checked')).map(c => parseInt(c.value))));
     if (chks.length === 0) {
         alert("Selecciona al menos una factura CFDI.");
         return;
+    }
+
+    const btn = document.getElementById('modal-asoc-btn-guardar');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Guardando...';
     }
 
     const contraCuenta = document.getElementById('modal-asoc-contra-cuenta').value.trim();
@@ -466,9 +472,17 @@ async function guardarAsociacionDirecto() {
             window.location.reload();
         } else {
             alert("Error: " + (res.error || "No se pudo asociar."));
+            if (btn) {
+                btn.disabled = false;
+                btn.innerText = '✅ Asociar Facturas Seleccionadas';
+            }
         }
     } catch(e) {
         alert("Error de conexión al asociar.");
+        if (btn) {
+            btn.disabled = false;
+            btn.innerText = '✅ Asociar Facturas Seleccionadas';
+        }
     }
 }
 

@@ -206,17 +206,55 @@ def pendientes_siguiente(empresa_id):
         # Si ya hay uno o varios CFDIs confirmados para este movimiento, el sistema ya
         # conoce el RFC y los impuestos exactos: no hace falta preguntar
         # IVA ni afectable, solo la cuenta contable del cliente/proveedor.
-        cfdis_asociados = con.execute(
+        cfdis_raw = con.execute(
             """SELECT c.id, c.uuid, c.serie, c.folio, c.rfc_emisor, c.nombre_emisor, c.rfc_receptor, c.nombre_receptor, c.total,
-                      cm.importe_aplicado, cm.motivo,
-                      ci.base, ci.importe AS iva_importe, ci.tasa
+                      cm.importe_aplicado, cm.motivo
                FROM cfdi_movimiento cm
                JOIN cfdis c ON c.id = cm.cfdi_id
-               LEFT JOIN cfdi_impuestos ci ON ci.cfdi_id = c.id
-               WHERE cm.movimiento_id = ? AND cm.confirmado = 1""",
+               WHERE cm.movimiento_id = ? AND cm.confirmado = 1
+               ORDER BY c.id ASC""",
             (movimiento["id"],),
         ).fetchall()
-        cfdi_info = cfdis_asociados[0] if cfdis_asociados else None
+
+        # Deduplicar por id para garantizar que jamás aparezca un CFDI duplicado
+        cfdis_vistos = set()
+        cfdis_asociados = []
+        for c in cfdis_raw:
+            if c["id"] not in cfdis_vistos:
+                cfdis_vistos.add(c["id"])
+                cfdis_asociados.append(c)
+
+        cfdi_info = None
+        if cfdis_asociados:
+            cfdi_ids = [c["id"] for c in cfdis_asociados]
+            placeholders = ",".join(["?"] * len(cfdi_ids))
+            imp_res = con.execute(
+                f"""SELECT SUM(CASE WHEN tipo_impuesto = 'IVA' AND es_retencion = 0 THEN base ELSE 0 END) AS base_total,
+                           SUM(CASE WHEN tipo_impuesto = 'IVA' AND es_retencion = 0 THEN importe ELSE 0 END) AS iva_total
+                    FROM cfdi_impuestos
+                    WHERE cfdi_id IN ({placeholders})""",
+                tuple(cfdi_ids),
+            ).fetchone()
+
+            base_tot = float(imp_res["base_total"] or 0.0) if imp_res else 0.0
+            iva_tot = float(imp_res["iva_total"] or 0.0) if imp_res else 0.0
+            tasa_calc = round(iva_tot / base_tot, 4) if base_tot > 0 else 0.16
+
+            primer_cfdi = cfdis_asociados[0]
+            cfdi_info = {
+                "id": primer_cfdi["id"],
+                "uuid": primer_cfdi["uuid"],
+                "serie": primer_cfdi["serie"],
+                "folio": primer_cfdi["folio"],
+                "rfc_emisor": primer_cfdi["rfc_emisor"],
+                "nombre_emisor": primer_cfdi["nombre_emisor"],
+                "rfc_receptor": primer_cfdi["rfc_receptor"],
+                "nombre_receptor": primer_cfdi["nombre_receptor"],
+                "total": primer_cfdi["total"],
+                "base": base_tot,
+                "iva_importe": iva_tot,
+                "tasa": tasa_calc,
+            }
 
     return render_template(
         "pendientes_siguiente.html", movimiento=movimiento, sugerencia=sugerencia,
