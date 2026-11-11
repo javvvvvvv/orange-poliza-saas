@@ -2,7 +2,7 @@ services:
   web:
     build: .
     ports:
-      - "${ORANGE_WEB_BIND_IP:-127.0.0.1}:8000:8000"
+      - "${ORANGE_WEB_BIND_IP:-0.0.0.0}:8000:8000"
     env_file:
       - .env.docker
     command: >

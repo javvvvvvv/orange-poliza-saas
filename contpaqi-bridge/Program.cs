@@ -107,6 +107,20 @@ app.MapPost("/cuentas/crear", async (CrearCuentaRequest req, ContpaqiSdkService 
     }
 });
 
+app.MapGet("/cuentas/progreso", (string empresa, ContpaqiSdkService sdk) =>
+{
+    if (string.IsNullOrWhiteSpace(empresa))
+    {
+        return Results.BadRequest(new RespuestaBridge(false, "Falta el nombre interno de la empresa."));
+    }
+    var prog = sdk.ObtenerProgresoCuentas(empresa);
+    return Results.Ok(new
+    {
+        exito = true,
+        progreso = prog
+    });
+});
+
 app.MapPost("/cuentas/listar", async (CuentasRequest req, ContpaqiSdkService sdk, ILogger<Program> log) =>
 {
     if (string.IsNullOrWhiteSpace(req.Empresa))
@@ -115,7 +129,7 @@ app.MapPost("/cuentas/listar", async (CuentasRequest req, ContpaqiSdkService sdk
     }
     try
     {
-        var cuentas = await sdk.ListarCuentasAsync(req.Empresa);
+        var cuentas = await sdk.ListarCuentasAsync(req.Empresa, req.Forzar, req.TotalEstimado);
         return Results.Ok(new { exito = true, mensaje = "OK", cuentas });
     }
     catch (Exception ex)

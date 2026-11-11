@@ -15,6 +15,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using Microsoft.CSharp.RuntimeBinder;
 using ContpaqiBridge.Models;
 
@@ -25,6 +26,7 @@ public sealed class ContpaqiSdkService : IDisposable
     private readonly StaComDispatcher _dispatcher;
     private readonly IConfiguration _config;
     private readonly ILogger<ContpaqiSdkService> _log;
+    private readonly string _cacheDir;
     private dynamic? _sesion;
     private string? _empresaAbiertaActual;
 
@@ -32,12 +34,104 @@ public sealed class ContpaqiSdkService : IDisposable
     private DateTime _cacheEmpresasExpira = DateTime.MinValue;
     private readonly ConcurrentDictionary<string, (List<CuentaDto> Cuentas, DateTime Expira)> _cacheCuentas = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, Task<List<CuentaDto>>> _enVueloCuentas = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ProgresoCuentasDto> _progresoCuentas = new(StringComparer.OrdinalIgnoreCase);
 
     public ContpaqiSdkService(StaComDispatcher dispatcher, IConfiguration config, ILogger<ContpaqiSdkService> log)
     {
         _dispatcher = dispatcher;
         _config = config;
         _log = log;
+        _cacheDir = Path.Combine(Directory.GetCurrentDirectory(), "cache");
+        try
+        {
+            Directory.CreateDirectory(_cacheDir);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "No se pudo crear directorio de caché en {Dir}", _cacheDir);
+        }
+    }
+
+    private string ObtenerRutaCacheCuentas(string nombreInternoEmpresa)
+    {
+        var nombreSeguro = string.Concat(nombreInternoEmpresa.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+        return Path.Combine(_cacheDir, $"cuentas_{nombreSeguro}.json");
+    }
+
+    private List<CuentaDto>? IntentarLeerCacheDisco(string nombreInternoEmpresa, TimeSpan maxEdad)
+    {
+        try
+        {
+            var ruta = ObtenerRutaCacheCuentas(nombreInternoEmpresa);
+            if (!File.Exists(ruta)) return null;
+            var info = new FileInfo(ruta);
+            if (DateTime.UtcNow - info.LastWriteTimeUtc > maxEdad) return null;
+            var json = File.ReadAllText(ruta);
+            var lista = JsonSerializer.Deserialize<List<CuentaDto>>(json);
+            if (lista is not null && lista.Count > 0)
+            {
+                return lista;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Aviso al leer caché en disco para {Empresa}", nombreInternoEmpresa);
+        }
+        return null;
+    }
+
+    private void GuardarCacheDisco(string nombreInternoEmpresa, List<CuentaDto> cuentas)
+    {
+        try
+        {
+            Directory.CreateDirectory(_cacheDir);
+            var ruta = ObtenerRutaCacheCuentas(nombreInternoEmpresa);
+            var json = JsonSerializer.Serialize(cuentas);
+            File.WriteAllText(ruta, json);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Aviso al guardar caché en disco para {Empresa}", nombreInternoEmpresa);
+        }
+    }
+
+    public ProgresoCuentasDto ObtenerProgresoCuentas(string nombreInternoEmpresa)
+    {
+        if (_progresoCuentas.TryGetValue(nombreInternoEmpresa, out var prog))
+        {
+            return prog;
+        }
+        if (_cacheCuentas.TryGetValue(nombreInternoEmpresa, out var enMem) && enMem.Cuentas.Count > 0)
+        {
+            return new ProgresoCuentasDto(
+                nombreInternoEmpresa,
+                EnCurso: false,
+                Terminado: true,
+                Leidas: enMem.Cuentas.Count,
+                TotalEstimado: enMem.Cuentas.Count,
+                Porcentaje: 100.0,
+                Segundos: 0.1,
+                CuentasPorSegundo: enMem.Cuentas.Count,
+                Etapa: "Catálogo disponible en caché rápido",
+                UltimaCuenta: null,
+                DesdeCache: true,
+                Error: null
+            );
+        }
+        return new ProgresoCuentasDto(
+            nombreInternoEmpresa,
+            EnCurso: false,
+            Terminado: false,
+            Leidas: 0,
+            TotalEstimado: 0,
+            Porcentaje: 0.0,
+            Segundos: 0.0,
+            CuentasPorSegundo: 0.0,
+            Etapa: "En espera",
+            UltimaCuenta: null,
+            DesdeCache: false,
+            Error: null
+        );
     }
 
     public Task<bool> VerificarSdkDisponibleAsync()
@@ -159,7 +253,7 @@ public sealed class ContpaqiSdkService : IDisposable
                 if (resultado.Count > 0)
                 {
                     _cacheEmpresas = resultado;
-                    _cacheEmpresasExpira = DateTime.UtcNow.AddMinutes(5);
+                    _cacheEmpresasExpira = DateTime.UtcNow.AddMinutes(30);
                 }
                 return resultado;
             }
@@ -191,7 +285,15 @@ public sealed class ContpaqiSdkService : IDisposable
             {
                 return new RespuestaBridge(false, $"No se pudo crear la cuenta: {cta.UltimoMsjError}");
             }
-            _cacheCuentas.TryRemove(nombreInternoEmpresa, out _);
+            if (_cacheCuentas.TryGetValue(nombreInternoEmpresa, out var actual))
+            {
+                actual.Cuentas.Add(cuenta);
+                GuardarCacheDisco(nombreInternoEmpresa, actual.Cuentas);
+            }
+            else
+            {
+                _cacheCuentas.TryRemove(nombreInternoEmpresa, out _);
+            }
             return new RespuestaBridge(true, "Cuenta creada exitosamente");
         }
         finally
@@ -200,79 +302,255 @@ public sealed class ContpaqiSdkService : IDisposable
         }
     });
 
-    public async Task<List<CuentaDto>> ListarCuentasAsync(string nombreInternoEmpresa)
+    public async Task<List<CuentaDto>> ListarCuentasAsync(string nombreInternoEmpresa, bool forzar = false, int totalEstimado = 0)
     {
-        if (_cacheCuentas.TryGetValue(nombreInternoEmpresa, out var entrada) && DateTime.UtcNow < entrada.Expira && entrada.Cuentas.Count > 0)
+        if (!forzar)
         {
-            _log.LogInformation("Retornando {N} cuentas en caché para {Empresa}", entrada.Cuentas.Count, nombreInternoEmpresa);
-            return entrada.Cuentas;
+            if (_cacheCuentas.TryGetValue(nombreInternoEmpresa, out var entrada) && DateTime.UtcNow < entrada.Expira && entrada.Cuentas.Count > 0)
+            {
+                _log.LogInformation("Retornando {N} cuentas en caché de memoria para {Empresa}", entrada.Cuentas.Count, nombreInternoEmpresa);
+                _progresoCuentas[nombreInternoEmpresa] = new ProgresoCuentasDto(
+                    nombreInternoEmpresa,
+                    EnCurso: false,
+                    Terminado: true,
+                    Leidas: entrada.Cuentas.Count,
+                    TotalEstimado: entrada.Cuentas.Count,
+                    Porcentaje: 100.0,
+                    Segundos: 0.05,
+                    CuentasPorSegundo: entrada.Cuentas.Count,
+                    Etapa: "Catálogo cargado instantáneamente desde memoria",
+                    UltimaCuenta: null,
+                    DesdeCache: true,
+                    Error: null
+                );
+                return entrada.Cuentas;
+            }
+
+            var desdeDisco = IntentarLeerCacheDisco(nombreInternoEmpresa, TimeSpan.FromHours(24));
+            if (desdeDisco is not null && desdeDisco.Count > 0)
+            {
+                _log.LogInformation("Retornando {N} cuentas desde caché en disco para {Empresa}", desdeDisco.Count, nombreInternoEmpresa);
+                _cacheCuentas[nombreInternoEmpresa] = (desdeDisco, DateTime.UtcNow.AddHours(12));
+                _progresoCuentas[nombreInternoEmpresa] = new ProgresoCuentasDto(
+                    nombreInternoEmpresa,
+                    EnCurso: false,
+                    Terminado: true,
+                    Leidas: desdeDisco.Count,
+                    TotalEstimado: desdeDisco.Count,
+                    Porcentaje: 100.0,
+                    Segundos: 0.1,
+                    CuentasPorSegundo: desdeDisco.Count,
+                    Etapa: "Catálogo cargado instantáneamente desde caché local",
+                    UltimaCuenta: null,
+                    DesdeCache: true,
+                    Error: null
+                );
+                return desdeDisco;
+            }
+        }
+
+        // Si había un caché previo (aunque expirado o forzado), usamos su tamaño como estimación exacta
+        int estimadoInicial = totalEstimado;
+        if (estimadoInicial <= 0 && _cacheCuentas.TryGetValue(nombreInternoEmpresa, out var prevCache) && prevCache.Cuentas.Count > 0)
+        {
+            estimadoInicial = prevCache.Cuentas.Count;
+        }
+        if (estimadoInicial <= 0)
+        {
+            var discoAntiguo = IntentarLeerCacheDisco(nombreInternoEmpresa, TimeSpan.FromDays(365));
+            if (discoAntiguo is not null && discoAntiguo.Count > 0)
+            {
+                estimadoInicial = discoAntiguo.Count;
+            }
+        }
+
+        if (!_enVueloCuentas.ContainsKey(nombreInternoEmpresa))
+        {
+            _progresoCuentas[nombreInternoEmpresa] = new ProgresoCuentasDto(
+                nombreInternoEmpresa,
+                EnCurso: true,
+                Terminado: false,
+                Leidas: 0,
+                TotalEstimado: estimadoInicial,
+                Porcentaje: 2.0,
+                Segundos: 0.0,
+                CuentasPorSegundo: 0.0,
+                Etapa: "Conectando con sesión de CONTPAQi...",
+                UltimaCuenta: null,
+                DesdeCache: false,
+                Error: null
+            );
         }
 
         var tarea = _enVueloCuentas.GetOrAdd(nombreInternoEmpresa, emp => _dispatcher.EjecutarAsync(() =>
         {
-            if (_cacheCuentas.TryGetValue(emp, out var cacheHit) && DateTime.UtcNow < cacheHit.Expira && cacheHit.Cuentas.Count > 0)
+            if (!forzar && _cacheCuentas.TryGetValue(emp, out var cacheHit) && DateTime.UtcNow < cacheHit.Expira && cacheHit.Cuentas.Count > 0)
             {
                 return cacheHit.Cuentas;
             }
 
             var sw = Stopwatch.StartNew();
-            AsegurarEmpresaAbierta(emp);
-
-            var tipoCuenta = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkCuenta")!;
-            dynamic cuenta = Activator.CreateInstance(tipoCuenta)!;
-
             try
             {
-                cuenta.setSesion(_sesion);
+                _progresoCuentas[emp] = new ProgresoCuentasDto(
+                    emp,
+                    EnCurso: true,
+                    Terminado: false,
+                    Leidas: 0,
+                    TotalEstimado: estimadoInicial,
+                    Porcentaje: 4.0,
+                    Segundos: sw.Elapsed.TotalSeconds,
+                    CuentasPorSegundo: 0.0,
+                    Etapa: $"Abriendo empresa {emp} en CONTPAQi...",
+                    UltimaCuenta: null,
+                    DesdeCache: false,
+                    Error: null
+                );
 
-                var resultado = new List<CuentaDto>();
-                int exito = 0;
-                string? ultimoCodigo = null;
-                _log.LogInformation("Iniciando lectura de cuentas para {Empresa}...", emp);
-                cuenta.consultaPorCodigo_buscaPrimero(ref exito);
-                if (exito == 1)
+                AsegurarEmpresaAbierta(emp);
+
+                var tipoCuenta = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkCuenta")!;
+                dynamic cuenta = Activator.CreateInstance(tipoCuenta)!;
+
+                try
                 {
-                    do
+                    cuenta.setSesion(_sesion);
+
+                    var resultado = new List<CuentaDto>(estimadoInicial > 0 ? estimadoInicial : 2048);
+                    int exito = 0;
+                    string? ultimoCodigo = null;
+                    _log.LogInformation("Iniciando lectura de cuentas para {Empresa}...", emp);
+
+                    _progresoCuentas[emp] = new ProgresoCuentasDto(
+                        emp,
+                        EnCurso: true,
+                        Terminado: false,
+                        Leidas: 0,
+                        TotalEstimado: estimadoInicial,
+                        Porcentaje: 6.0,
+                        Segundos: Math.Round(sw.Elapsed.TotalSeconds, 1),
+                        CuentasPorSegundo: 0.0,
+                        Etapa: "Leyendo catálogo de cuentas desde CONTPAQi...",
+                        UltimaCuenta: null,
+                        DesdeCache: false,
+                        Error: null
+                    );
+
+                    cuenta.consultaPorCodigo_buscaPrimero(ref exito);
+                    if (exito == 1)
                     {
-                        try 
+                        do
                         {
-                            string codigo = ((string)cuenta.Codigo).Replace("\0", "").Trim();
-                            if (string.IsNullOrEmpty(codigo) || codigo == ultimoCodigo)
+                            try 
                             {
-                                break;
-                            }
-                            ultimoCodigo = codigo;
-                            string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
-                            
-                            if (codigo != "_CUADRE" && !codigo.StartsWith("_"))
-                            {
-                                resultado.Add(new CuentaDto(codigo, nombre, null));
-                                if (resultado.Count % 100 == 0)
+                                string codigo = ((string)cuenta.Codigo).Replace("\0", "").Trim();
+                                if (string.IsNullOrEmpty(codigo) || codigo == ultimoCodigo)
                                 {
-                                    _log.LogInformation("Leídas {N} cuentas de {Empresa} en {Seg:F1}s (última: {Cod})", resultado.Count, emp, sw.Elapsed.TotalSeconds, codigo);
+                                    break;
+                                }
+                                ultimoCodigo = codigo;
+                                string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
+                                
+                                if (codigo != "_CUADRE" && !codigo.StartsWith("_"))
+                                {
+                                    resultado.Add(new CuentaDto(codigo, nombre, null));
+                                    int n = resultado.Count;
+                                    if (n % 5 == 0 || n == 1)
+                                    {
+                                        double seg = Math.Max(0.1, sw.Elapsed.TotalSeconds);
+                                        double vel = Math.Round(n / seg, 1);
+                                        double pct;
+                                        int estActual = estimadoInicial;
+                                        if (estActual > 0)
+                                        {
+                                            if (n >= estActual)
+                                            {
+                                                estActual = n + 50;
+                                            }
+                                            pct = Math.Min(95.0, Math.Round(6.0 + ((double)n / estActual) * 89.0, 1));
+                                        }
+                                        else
+                                        {
+                                            pct = Math.Min(92.0, Math.Round(6.0 + (1.0 - Math.Exp(-n / 1800.0)) * 86.0, 1));
+                                        }
+
+                                        _progresoCuentas[emp] = new ProgresoCuentasDto(
+                                            emp,
+                                            EnCurso: true,
+                                            Terminado: false,
+                                            Leidas: n,
+                                            TotalEstimado: estActual,
+                                            Porcentaje: pct,
+                                            Segundos: Math.Round(seg, 1),
+                                            CuentasPorSegundo: vel,
+                                            Etapa: "Extrayendo cuentas desde CONTPAQi...",
+                                            UltimaCuenta: $"{codigo} — {nombre}",
+                                            DesdeCache: false,
+                                            Error: null
+                                        );
+                                    }
+                                    if (n % 100 == 0)
+                                    {
+                                        _log.LogInformation("Leídas {N} cuentas de {Empresa} en {Seg:F1}s (última: {Cod})", n, emp, sw.Elapsed.TotalSeconds, codigo);
+                                    }
                                 }
                             }
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.LogWarning("Error leyendo cuenta en {Empresa}: {Msg}", emp, ex.Message);
-                            break;
-                        }
-                        exito = 0;
-                        cuenta.consultaPorCodigo_buscaSiguiente(ref exito);
-                    } while (exito == 1);
+                            catch (Exception ex)
+                            {
+                                _log.LogWarning("Error leyendo cuenta en {Empresa}: {Msg}", emp, ex.Message);
+                                break;
+                            }
+                            exito = 0;
+                            cuenta.consultaPorCodigo_buscaSiguiente(ref exito);
+                        } while (exito == 1);
+                    }
+                    sw.Stop();
+                    double segTotal = Math.Max(0.1, sw.Elapsed.TotalSeconds);
+                    _log.LogInformation("Lectura finalizada para {Empresa}: {N} cuentas en {Seg:F1}s", emp, resultado.Count, segTotal);
+                    if (resultado.Count > 0)
+                    {
+                        _cacheCuentas[emp] = (resultado, DateTime.UtcNow.AddHours(12));
+                        GuardarCacheDisco(emp, resultado);
+                    }
+                    _progresoCuentas[emp] = new ProgresoCuentasDto(
+                        emp,
+                        EnCurso: false,
+                        Terminado: true,
+                        Leidas: resultado.Count,
+                        TotalEstimado: resultado.Count,
+                        Porcentaje: 100.0,
+                        Segundos: Math.Round(segTotal, 1),
+                        CuentasPorSegundo: Math.Round(resultado.Count / segTotal, 1),
+                        Etapa: "Lectura de CONTPAQi completada",
+                        UltimaCuenta: resultado.Count > 0 ? $"{resultado[^1].Codigo} — {resultado[^1].Nombre}" : null,
+                        DesdeCache: false,
+                        Error: null
+                    );
+                    return resultado;
                 }
-                sw.Stop();
-                _log.LogInformation("Lectura finalizada para {Empresa}: {N} cuentas en {Seg:F1}s", emp, resultado.Count, sw.Elapsed.TotalSeconds);
-                if (resultado.Count > 0)
+                finally
                 {
-                    _cacheCuentas[emp] = (resultado, DateTime.UtcNow.AddMinutes(10));
+                    try { Marshal.ReleaseComObject(cuenta); } catch { }
                 }
-                return resultado;
             }
-            finally
+            catch (Exception ex)
             {
-                try { Marshal.ReleaseComObject(cuenta); } catch { }
+                sw.Stop();
+                _progresoCuentas[emp] = new ProgresoCuentasDto(
+                    emp,
+                    EnCurso: false,
+                    Terminado: true,
+                    Leidas: 0,
+                    TotalEstimado: estimadoInicial,
+                    Porcentaje: 0.0,
+                    Segundos: Math.Round(sw.Elapsed.TotalSeconds, 1),
+                    CuentasPorSegundo: 0.0,
+                    Etapa: "Error al leer desde CONTPAQi",
+                    UltimaCuenta: null,
+                    DesdeCache: false,
+                    Error: ex.Message
+                );
+                throw;
             }
         }, TimeSpan.FromSeconds(900)));
 

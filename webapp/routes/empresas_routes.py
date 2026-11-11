@@ -228,8 +228,10 @@ def dashboard(empresa_id):
         n_reglas = con.execute("SELECT COUNT(*) FROM reglas WHERE empresa_id = ? AND activa = 1", (empresa_id,)).fetchone()[0]
 
         # Analiticas Financieras
-        ingresos = con.execute("SELECT SUM(total) FROM movimientos WHERE empresa_id = ? AND tipo = 'ingreso'", (empresa_id,)).fetchone()[0] or 0.0
-        egresos = con.execute("SELECT SUM(total) FROM movimientos WHERE empresa_id = ? AND tipo = 'egreso'", (empresa_id,)).fetchone()[0] or 0.0
+        raw_ingresos = con.execute("SELECT SUM(total) FROM movimientos WHERE empresa_id = ? AND tipo = 'ingreso'", (empresa_id,)).fetchone()[0]
+        raw_egresos = con.execute("SELECT SUM(total) FROM movimientos WHERE empresa_id = ? AND tipo = 'egreso'", (empresa_id,)).fetchone()[0]
+        ingresos = float(raw_ingresos) if raw_ingresos is not None else 0.0
+        egresos = float(raw_egresos) if raw_egresos is not None else 0.0
         
         # Agrupacion por categorias (usando reglas)
         grafica_ingresos = con.execute("""

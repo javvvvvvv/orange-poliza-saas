@@ -1,46 +1,137 @@
 {% extends "base.html" %}
 {% block titulo %}Catálogo de cuentas{% endblock %}
 {% block contenido %}
-<h1 class="text-xl font-semibold text-marino-900 mb-6">Catálogo de cuentas</h1>
+<div class="flex items-center justify-between mb-6">
+  <div>
+    <h1 class="text-xl font-semibold text-marino-900">Catálogo de cuentas</h1>
+    <p class="text-xs text-slate-500 mt-0.5">
+      Total actual en catálogo: <span class="font-semibold text-slate-700">{{ cuentas|length }}</span> cuenta(s)
+      {% if base_datos_contpaqi %}
+        · Base CONTPAQi vinculada: <span class="font-mono text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded">{{ base_datos_contpaqi }}</span>
+      {% endif %}
+    </p>
+  </div>
+</div>
 
-<div class="grid grid-cols-2 gap-6 mb-8">
-  <div class="bg-white border border-slate-200 rounded-xl p-6">
-    <div class="font-medium text-marino-900 mb-3">Subir desde Excel</div>
-    <div class="text-xs text-slate-500 mb-3">
-      Debe tener columnas "cuenta" y "descripcion"; si no las tiene, se
-      toman la primera y segunda columna del archivo.
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+  <!-- Tarjeta 1: Subir desde Excel -->
+  <div class="bg-white border border-slate-200 rounded-xl p-6 flex flex-col justify-between shadow-sm">
+    <div>
+      <div class="font-medium text-marino-900 mb-2">Subir desde Excel</div>
+      <div class="text-xs text-slate-500 mb-4">
+        Debe tener columnas "cuenta" y "descripcion"; si no las tiene, se
+        toman la primera y segunda columna del archivo.
+      </div>
     </div>
     <form method="post" enctype="multipart/form-data" class="space-y-3">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="modo" value="archivo">
       <input type="file" name="archivo_catalogo" accept=".xlsx,.xls" required class="w-full text-sm">
-      <button class="bg-naranja-600 hover:bg-naranja-700 text-white text-sm font-medium rounded-lg px-4 py-2">
-        Importar
+      <button class="w-full bg-naranja-600 hover:bg-naranja-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
+        Importar desde Excel
       </button>
     </form>
   </div>
 
-  <div class="bg-white border border-slate-200 rounded-xl p-6">
-    <div class="font-medium text-marino-900 mb-3">Pegar datos</div>
-    <div class="text-xs text-slate-500 mb-3">Una cuenta por línea: cuenta [tab o coma] descripción.</div>
-    <form method="post" class="space-y-3">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="modo" value="texto">
-      <textarea name="texto_catalogo" rows="4" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono"
-                placeholder="1001151150&#9;Cuenta Bancaria Principal"></textarea>
-      <button class="bg-naranja-600 hover:bg-naranja-700 text-white text-sm font-medium rounded-lg px-4 py-2">
-        Importar
-      </button>
-    </form>
-    <div class="bg-white border border-slate-200 rounded-xl p-6">
-    <div class="font-medium text-marino-900 mb-3">Sincronizacion Directa CONTPAQi</div>
-    <div class="text-xs text-slate-500 mb-3">Extrae el catalogo conectandose directamente a la base de datos SQL Server configurada en Ajustes.</div>
+  <!-- Tarjeta 2: Pegar datos -->
+  <div class="bg-white border border-slate-200 rounded-xl p-6 flex flex-col justify-between shadow-sm">
+    <div>
+      <div class="font-medium text-marino-900 mb-2">Pegar datos</div>
+      <div class="text-xs text-slate-500 mb-3">Una cuenta por línea: cuenta [tab o coma] descripción.</div>
+    </div>
     <form method="post" class="space-y-3">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="modo" value="contpaqi">
-      <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-4 py-2 mt-2">Extraer Catalogo desde CONTPAQi</button>
+      <input type="hidden" name="modo" value="texto">
+      <textarea name="texto_catalogo" rows="3" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono"
+                placeholder="1001151150&#9;Cuenta Bancaria Principal"></textarea>
+      <button class="w-full bg-naranja-600 hover:bg-naranja-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
+        Importar texto
+      </button>
     </form>
   </div>
+
+  <!-- Tarjeta 3: Sincronización Directa CONTPAQi -->
+  <div class="bg-white border border-blue-200 rounded-xl p-6 flex flex-col justify-between shadow-sm">
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <div class="font-medium text-marino-900">Sincronización Directa CONTPAQi</div>
+        <span class="text-[11px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-full">SDK Directo</span>
+      </div>
+      <div class="text-xs text-slate-500 mb-3">
+        Extrae el catálogo conectándose al SDK de CONTPAQi con caché inteligente ultrarrápido y monitoreo de avance en vivo.
+      </div>
+      {% if not base_datos_contpaqi %}
+      <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3">
+        ⚠ Aún no has seleccionado la empresa de CONTPAQi en
+        <a href="{{ url_for('configuracion.configuracion', empresa_id=request.view_args.empresa_id) }}" class="underline font-semibold">IVA y bancos</a>.
+      </div>
+      {% endif %}
+    </div>
+
+    <form id="formSyncContpaqi" method="post" class="space-y-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="modo" value="contpaqi">
+      <label class="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
+        <input type="checkbox" id="chkForzarContpaqi" name="forzar" value="1" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500">
+        <span>Forzar lectura completa desde CONTPAQi (ignorar caché rápido)</span>
+      </label>
+      <button type="submit" id="btnSyncContpaqi"
+              class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-sm font-medium rounded-lg px-4 py-2.5 transition-colors flex items-center justify-center gap-2">
+        <span id="txtBtnSyncContpaqi">Extraer Catálogo desde CONTPAQi</span>
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- Panel de Barra de Progreso en Tiempo Real -->
+<div id="panelProgresoCatalogo" class="hidden bg-white border border-blue-200 rounded-xl p-6 mb-8 shadow-sm">
+  <div class="flex items-center justify-between mb-3">
+    <div class="flex items-center gap-3">
+      <div id="spinnerProgreso" class="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+      <div>
+        <div id="tituloEtapaProgreso" class="text-sm font-semibold text-marino-900">Conectando con CONTPAQi...</div>
+        <div id="subtituloProgreso" class="text-xs text-slate-500">Sincronizando catálogo de cuentas en segundo plano</div>
+      </div>
+    </div>
+    <div id="badgePorcentaje" class="text-lg font-bold text-blue-700 bg-blue-50 border border-blue-200 px-3 py-1 rounded-lg">
+      0%
+    </div>
+  </div>
+
+  <!-- Barra de progreso -->
+  <div class="w-full bg-slate-100 rounded-full h-3.5 overflow-hidden mb-4 border border-slate-200">
+    <div id="barraProgresoFill"
+         class="bg-gradient-to-r from-blue-500 to-indigo-600 h-full rounded-full transition-all duration-300 ease-out"
+         style="width: 2%"></div>
+  </div>
+
+  <!-- Métricas en vivo -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+    <div class="bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-2.5">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Cuentas leídas</div>
+      <div id="metricaLeidas" class="text-base font-bold text-slate-800 mt-0.5">0</div>
+    </div>
+    <div class="bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-2.5">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Velocidad</div>
+      <div id="metricaVelocidad" class="text-base font-bold text-slate-800 mt-0.5">—</div>
+    </div>
+    <div class="bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-2.5">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Tiempo transcurrido</div>
+      <div id="metricaTranscurrido" class="text-base font-bold text-slate-800 mt-0.5">00:00</div>
+    </div>
+    <div class="bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-2.5">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Tiempo restante est.</div>
+      <div id="metricaRestante" class="text-base font-bold text-blue-700 mt-0.5">Calculando...</div>
+    </div>
+  </div>
+
+  <!-- Última cuenta procesada -->
+  <div id="contenedorUltimaCuenta" class="hidden text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 font-mono truncate">
+    Última cuenta leída: <span id="txtUltimaCuenta" class="font-semibold text-slate-800"></span>
+  </div>
+
+  <!-- Mensaje de error si ocurre -->
+  <div id="alertaErrorProgreso" class="hidden mt-3 bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-xs font-medium"></div>
 </div>
 
 <div class="bg-white border border-slate-200 rounded-xl overflow-hidden overflow-x-auto">
@@ -50,7 +141,7 @@
              class="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm">
     </form>
     <form method="post" action="/empresas/{{ request.view_args.empresa_id }}/catalogo/eliminar-todo" onsubmit="return confirm('¿Eliminar todo el catálogo de esta empresa?');">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="text-xs text-red-600 hover:underline whitespace-nowrap">Eliminar todo</button>
     </form>
   </div>
@@ -62,7 +153,6 @@
       </tr>
     </thead>
     <tbody>
-      
       {% for c in cuentas %}
       <tr class="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors">
         <td class="px-5 py-2 font-mono text-slate-800" style="padding-left: {{ 1.25 + ((c.nivel or 1) - 1) * 1.5 }}rem;">
@@ -74,11 +164,230 @@
         </td>
         <td class="px-5 py-2 text-slate-600 {% if c.nivel == 1 %}font-semibold{% endif %}">{{ c.descripcion }}</td>
       </tr>
-
       {% else %}
       <tr><td colspan="2" class="px-5 py-6 text-center text-slate-400">Sin cuentas en el catálogo todavía.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+
+<script>
+(function() {
+  const empresaId = {{ request.view_args.empresa_id }};
+  const csrfToken = "{{ csrf_token() }}";
+  const formSync = document.getElementById("formSyncContpaqi");
+  const btnSync = document.getElementById("btnSyncContpaqi");
+  const txtBtn = document.getElementById("txtBtnSyncContpaqi");
+  const chkForzar = document.getElementById("chkForzarContpaqi");
+
+  const panel = document.getElementById("panelProgresoCatalogo");
+  const spinner = document.getElementById("spinnerProgreso");
+  const tituloEtapa = document.getElementById("tituloEtapaProgreso");
+  const subtitulo = document.getElementById("subtituloProgreso");
+  const badgePct = document.getElementById("badgePorcentaje");
+  const barraFill = document.getElementById("barraProgresoFill");
+  const metLeidas = document.getElementById("metricaLeidas");
+  const metVelocidad = document.getElementById("metricaVelocidad");
+  const metTranscurrido = document.getElementById("metricaTranscurrido");
+  const metRestante = document.getElementById("metricaRestante");
+  const boxUltima = document.getElementById("contenedorUltimaCuenta");
+  const txtUltima = document.getElementById("txtUltimaCuenta");
+  const alertaError = document.getElementById("alertaErrorProgreso");
+
+  let timerPoll = null;
+
+  function formatearTiempo(segundos) {
+    const s = Math.max(0, Math.round(segundos || 0));
+    const min = Math.floor(s / 60);
+    const rem = s % 60;
+    return String(min).padStart(2, "0") + ":" + String(rem).padStart(2, "0");
+  }
+
+  function estimarTotalPorPrefijoCuenta(ultimaCuenta, leidas) {
+    if (!ultimaCuenta || leidas < 50) return 0;
+    // En CONTPAQi las cuentas se recorren en orden ascendente de código (1... a 6.../7.../8...)
+    const limpio = String(ultimaCuenta).trim();
+    const primerDigito = parseInt(limpio.charAt(0), 10);
+    if (isNaN(primerDigito) || primerDigito < 1 || primerDigito > 9) return 0;
+    // Fracción aproximada acumulada del catálogo según el primer dígito (1=Activo, 2=Pasivo, 3=Capital, 4=Ingresos, 5=Costos, 6/7=Gastos)
+    const mapaFraccion = {1: 0.35, 2: 0.55, 3: 0.60, 4: 0.68, 5: 0.78, 6: 0.92, 7: 0.96, 8: 0.98, 9: 0.99};
+    const frac = mapaFraccion[primerDigito] || 0.5;
+    return Math.max(leidas + 50, Math.round(leidas / frac));
+  }
+
+  function renderizarEstado(est) {
+    panel.classList.remove("hidden");
+    alertaError.classList.add("hidden");
+
+    const leidas = Number(est.leidas || 0);
+    let totalEst = Number(est.total_estimado || 0);
+    const vel = Number(est.velocidad || 0);
+    const seg = Number(est.segundos || 0);
+    let pct = Number(est.porcentaje || 0);
+
+    if (totalEst <= 0 && est.ultima_cuenta && leidas >= 50) {
+      totalEst = estimarTotalPorPrefijoCuenta(est.ultima_cuenta, leidas);
+      if (totalEst > 0 && est.en_curso && est.fase !== "guardando_bd") {
+        pct = Math.min(94, Math.max(pct, Math.round((leidas / totalEst) * 94)));
+      }
+    }
+
+    pct = Math.max(0, Math.min(100, pct));
+    badgePct.textContent = pct.toFixed(pct % 1 === 0 ? 0 : 1) + "%";
+    barraFill.style.width = Math.max(2, pct) + "%";
+    tituloEtapa.textContent = est.etapa || "Sincronizando catálogo...";
+
+    if (totalEst > 0 && est.en_curso) {
+      metLeidas.textContent = leidas.toLocaleString("es-MX") + " / ~" + totalEst.toLocaleString("es-MX");
+    } else {
+      metLeidas.textContent = leidas.toLocaleString("es-MX");
+    }
+
+    if (est.desde_cache) {
+      metVelocidad.textContent = "Instantáneo (Caché)";
+    } else if (vel > 0) {
+      metVelocidad.textContent = vel.toFixed(1) + " ctas/seg";
+    } else {
+      metVelocidad.textContent = "Conectando...";
+    }
+
+    metTranscurrido.textContent = formatearTiempo(seg);
+
+    if (est.terminado && !est.error) {
+      metRestante.textContent = "¡Listo!";
+      spinner.classList.add("hidden");
+      barraFill.classList.remove("from-blue-500", "to-indigo-600");
+      barraFill.classList.add("bg-emerald-600");
+      subtitulo.textContent = "Recargando tabla de cuentas...";
+    } else if (est.error) {
+      metRestante.textContent = "Detenido";
+      spinner.classList.add("hidden");
+      barraFill.classList.remove("from-blue-500", "to-indigo-600");
+      barraFill.classList.add("bg-red-600");
+      alertaError.textContent = est.error;
+      alertaError.classList.remove("hidden");
+      btnSync.disabled = false;
+      txtBtn.textContent = "Reintentar Extracción desde CONTPAQi";
+    } else if (est.fase === "guardando_bd") {
+      metRestante.textContent = "Unos segundos...";
+    } else if (totalEst > leidas && vel > 0) {
+      const restSeg = Math.max(2, Math.round((totalEst - leidas) / vel));
+      metRestante.textContent = "~" + formatearTiempo(restSeg);
+    } else if (leidas > 0 && vel > 0) {
+      metRestante.textContent = "En lectura continua...";
+    } else {
+      metRestante.textContent = "Calculando...";
+    }
+
+    if (est.ultima_cuenta) {
+      boxUltima.classList.remove("hidden");
+      txtUltima.textContent = est.ultima_cuenta;
+    }
+  }
+
+  async function consultarProgreso() {
+    try {
+      const resp = await fetch(`/empresas/${empresaId}/catalogo/progreso`, {
+        headers: { "Accept": "application/json" }
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.en_curso && !data.terminado) return;
+
+      renderizarEstado(data);
+
+      if (data.terminado) {
+        if (timerPoll) {
+          clearInterval(timerPoll);
+          timerPoll = null;
+        }
+        if (!data.error) {
+          setTimeout(() => {
+            window.location.href = `/empresas/${empresaId}/catalogo`;
+          }, 900);
+        }
+      }
+    } catch (e) {
+      console.warn("Error consultando progreso:", e);
+    }
+  }
+
+  if (formSync) {
+    formSync.addEventListener("submit", async function(ev) {
+      ev.preventDefault();
+      btnSync.disabled = true;
+      txtBtn.textContent = "Sincronizando con CONTPAQi...";
+      spinner.classList.remove("hidden");
+      barraFill.className = "bg-gradient-to-r from-blue-500 to-indigo-600 h-full rounded-full transition-all duration-300 ease-out";
+
+      renderizarEstado({
+        en_curso: true,
+        terminado: false,
+        porcentaje: 2,
+        leidas: 0,
+        total_estimado: {{ cuentas|length }},
+        segundos: 0,
+        velocidad: 0,
+        etapa: "Iniciando conexión con el puente CONTPAQi..."
+      });
+
+      try {
+        const resp = await fetch(`/empresas/${empresaId}/catalogo/sincronizar-async`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": csrfToken
+          },
+          body: JSON.stringify({
+            forzar: chkForzar ? chkForzar.checked : false
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.exito) {
+          renderizarEstado({
+            en_curso: false,
+            terminado: true,
+            porcentaje: 0,
+            leidas: 0,
+            segundos: 0,
+            etapa: "No se pudo iniciar la sincronización",
+            error: data.error || data.mensaje || "Error desconocido"
+          });
+          return;
+        }
+        if (timerPoll) clearInterval(timerPoll);
+        timerPoll = setInterval(consultarProgreso, 800);
+        consultarProgreso();
+      } catch (err) {
+        renderizarEstado({
+          en_curso: false,
+          terminado: true,
+          porcentaje: 0,
+          leidas: 0,
+          segundos: 0,
+          etapa: "Error de red al iniciar sincronización",
+          error: String(err)
+        });
+      }
+    });
+  }
+
+  // Si ya había una sincronización en curso al abrir la página, reanudar barra automáticamente
+  (async function verificarEnCursoInicial() {
+    try {
+      const resp = await fetch(`/empresas/${empresaId}/catalogo/progreso`, {
+        headers: { "Accept": "application/json" }
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data && data.en_curso) {
+        btnSync.disabled = true;
+        txtBtn.textContent = "Sincronizando con CONTPAQi...";
+        renderizarEstado(data);
+        timerPoll = setInterval(consultarProgreso, 800);
+      }
+    } catch (e) {}
+  })();
+})();
+</script>
 {% endblock %}

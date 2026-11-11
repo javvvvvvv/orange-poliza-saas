@@ -88,12 +88,13 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
 
         for ret in cfdi.impuestos_retenidos:
             tipo_imp = catalogo_impuesto_sat.get(getattr(ret, "impuesto", "002"), getattr(ret, "impuesto", "IVA"))
-            b_ret = getattr(ret, "base", 0.0) or cfdi.subtotal
-            t_ret = getattr(ret, "tasa", 0.0) or (round(ret.importe / b_ret, 6) if b_ret else 0.0)
+            b_ret = float(getattr(ret, "base", 0.0) or cfdi.subtotal or 0.0)
+            imp_ret = float(getattr(ret, "importe", 0.0) or 0.0)
+            t_ret = float(getattr(ret, "tasa", 0.0) or (round(imp_ret / b_ret, 6) if b_ret else 0.0))
             cur.execute(
                 "INSERT INTO cfdi_impuestos (cfdi_id, base, importe, tasa, tipo_factor, es_retencion, tipo_impuesto) "
                 "VALUES (?, ?, ?, ?, 'Tasa', 1, ?)",
-                (cfdi_id, b_ret, ret.importe, t_ret, tipo_imp),
+                (cfdi_id, b_ret, imp_ret, t_ret, tipo_imp),
             )
 
     con.commit()

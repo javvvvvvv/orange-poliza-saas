@@ -66,6 +66,35 @@ configuracion_bp = Blueprint('configuracion', __name__)
 
 # --- Catálogo de cuentas ---
 
+def _ruta_estado_sync(empresa_id: int) -> str:
+    return os.path.join(tempfile.gettempdir(), f"orange_sync_catalogo_{int(empresa_id)}.json")
+
+def _leer_estado_sync(empresa_id: int) -> dict:
+    import json
+    ruta = _ruta_estado_sync(empresa_id)
+    if not os.path.exists(ruta):
+        return {}
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+def _guardar_estado_sync(empresa_id: int, estado: dict) -> None:
+    import json
+    ruta = _ruta_estado_sync(empresa_id)
+    ruta_tmp = f"{ruta}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(ruta_tmp, "w", encoding="utf-8") as f:
+            json.dump(estado, f, ensure_ascii=False)
+        os.replace(ruta_tmp, ruta)
+    except Exception:
+        try:
+            if os.path.exists(ruta_tmp):
+                os.remove(ruta_tmp)
+        except OSError:
+            pass
+
 @configuracion_bp.route("/empresas/<int:empresa_id>/catalogo", methods=["GET", "POST"])
 @login_required
 @empresa_requerida
@@ -100,7 +129,8 @@ def catalogo(empresa_id):
                     ruta_contpaqi = con.execute("SELECT base_datos_contpaqi FROM empresas WHERE id = ?", (empresa_id,)).fetchone()[0]
                 if not ruta_contpaqi:
                     raise Exception("Falta configurar la ruta CONTPAQi de la empresa en Configuracion.")
-                total = catalogo_repo.sincronizar_desde_contpaqi(empresa_id, ruta_contpaqi)
+                forzar = request.form.get("forzar") == "1"
+                total = catalogo_repo.sincronizar_desde_contpaqi(empresa_id, ruta_contpaqi, forzar=forzar)
             else:
                 raise Exception("Modo no valido")
             flash(f"{total} cuentas importadas/actualizadas en el catálogo.", "exito")
@@ -110,7 +140,185 @@ def catalogo(empresa_id):
 
     buscar = request.args.get("q")
     cuentas = catalogo_repo.listar(empresa_id, buscar=buscar)
-    return render_template("catalogo.html", cuentas=cuentas, buscar=buscar or "")
+    with get_connection() as con:
+        fila_emp = con.execute("SELECT base_datos_contpaqi FROM empresas WHERE id = ?", (empresa_id,)).fetchone()
+        base_datos_contpaqi = fila_emp[0] if fila_emp else None
+    return render_template(
+        "catalogo.html",
+        cuentas=cuentas,
+        buscar=buscar or "",
+        base_datos_contpaqi=base_datos_contpaqi or "",
+    )
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/catalogo/sincronizar-async", methods=["POST"])
+@login_required
+@empresa_requerida
+def catalogo_sincronizar_async(empresa_id):
+    import threading
+    import time
+
+    with get_connection() as con:
+        fila = con.execute(
+            "SELECT base_datos_contpaqi, (SELECT COUNT(*) FROM cuentas_catalogo WHERE empresa_id = ?) FROM empresas WHERE id = ?",
+            (empresa_id, empresa_id),
+        ).fetchone()
+    ruta_contpaqi = fila[0] if fila else None
+    total_previo = int(fila[1] or 0) if fila else 0
+
+    if not ruta_contpaqi:
+        return {
+            "exito": False,
+            "error": "Falta configurar la base de datos CONTPAQi de la empresa en Ajustes (IVA y bancos).",
+        }, 400
+
+    payload = request.get_json(silent=True) or {}
+    forzar = bool(payload.get("forzar", False))
+
+    estado_actual = _leer_estado_sync(empresa_id)
+    ahora = time.time()
+    if estado_actual.get("en_curso") and (ahora - float(estado_actual.get("inicio_ts", 0))) < 900:
+        return {
+            "exito": True,
+            "en_curso": True,
+            "empresa_contpaqi": ruta_contpaqi,
+            "mensaje": "Sincronización en curso.",
+        }
+
+    estado_inicial = {
+        "en_curso": True,
+        "terminado": False,
+        "fase": "conectando",
+        "etapa": f"Conectando con CONTPAQi ({ruta_contpaqi})...",
+        "leidas": 0,
+        "total_estimado": total_previo,
+        "porcentaje": 2.0,
+        "segundos": 0.0,
+        "velocidad": 0.0,
+        "ultima_cuenta": None,
+        "importadas": 0,
+        "desde_cache": False,
+        "error": None,
+        "inicio_ts": ahora,
+        "empresa_contpaqi": ruta_contpaqi,
+    }
+    _guardar_estado_sync(empresa_id, estado_inicial)
+
+    def _trabajador():
+        t0 = time.time()
+
+        def _on_etapa(fase: str, leidas_actual: int, estimado_actual: int):
+            est = _leer_estado_sync(empresa_id) or dict(estado_inicial)
+            est["fase"] = fase
+            est["segundos"] = round(time.time() - t0, 1)
+            if fase == "leyendo_sdk":
+                est["etapa"] = f"Extrayendo catálogo de {ruta_contpaqi} desde CONTPAQi..."
+                est["porcentaje"] = max(float(est.get("porcentaje") or 4.0), 5.0)
+            elif fase == "guardando_bd":
+                est["leidas"] = int(leidas_actual)
+                est["total_estimado"] = int(estimado_actual)
+                est["porcentaje"] = 96.0
+                est["etapa"] = f"Guardando e indexando jerarquía de {leidas_actual:,} cuentas en base de datos..."
+            _guardar_estado_sync(empresa_id, est)
+
+        try:
+            total = catalogo_repo.sincronizar_desde_contpaqi(
+                empresa_id,
+                ruta_contpaqi,
+                forzar=forzar,
+                callback_etapa=_on_etapa,
+            )
+            duracion = round(max(0.1, time.time() - t0), 1)
+            est_fin = _leer_estado_sync(empresa_id) or dict(estado_inicial)
+            est_fin.update({
+                "en_curso": False,
+                "terminado": True,
+                "fase": "completado",
+                "etapa": f"¡Catálogo sincronizado! {total:,} cuentas listas.",
+                "leidas": int(total),
+                "total_estimado": int(total),
+                "importadas": int(total),
+                "porcentaje": 100.0,
+                "segundos": duracion,
+                "velocidad": round(total / duracion, 1) if duracion > 0 else total,
+                "error": None,
+            })
+            _guardar_estado_sync(empresa_id, est_fin)
+        except Exception as e:
+            duracion = round(max(0.1, time.time() - t0), 1)
+            est_err = _leer_estado_sync(empresa_id) or dict(estado_inicial)
+            est_err.update({
+                "en_curso": False,
+                "terminado": True,
+                "fase": "error",
+                "etapa": "Error durante la sincronización",
+                "segundos": duracion,
+                "error": str(e),
+            })
+            _guardar_estado_sync(empresa_id, est_err)
+
+    hilo = threading.Thread(target=_trabajador, daemon=True)
+    hilo.start()
+    return {
+        "exito": True,
+        "en_curso": True,
+        "empresa_contpaqi": ruta_contpaqi,
+    }
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/catalogo/progreso", methods=["GET"])
+@login_required
+@empresa_requerida
+def catalogo_progreso(empresa_id):
+    import time
+
+    estado = _leer_estado_sync(empresa_id)
+    if not estado:
+        return {
+            "exito": True,
+            "en_curso": False,
+            "terminado": False,
+            "porcentaje": 0.0,
+            "leidas": 0,
+            "total_estimado": 0,
+            "etapa": "Sin sincronización activa",
+        }
+
+    ahora = time.time()
+    inicio_ts = float(estado.get("inicio_ts") or ahora)
+    if estado.get("en_curso"):
+        estado["segundos"] = round(max(0.1, ahora - inicio_ts), 1)
+
+    if estado.get("en_curso") and estado.get("fase") in ("conectando", "leyendo_sdk"):
+        emp_contpaqi = estado.get("empresa_contpaqi")
+        if emp_contpaqi:
+            try:
+                from contpaqi_bridge_client import obtener_progreso_cuentas
+                res_bridge = obtener_progreso_cuentas(emp_contpaqi)
+                prog = (res_bridge or {}).get("progreso") or {}
+                if prog:
+                    leidas_b = int(prog.get("leidas") or 0)
+                    est_b = int(prog.get("totalEstimado") or estado.get("total_estimado") or 0)
+                    pct_b = float(prog.get("porcentaje") or 0.0)
+                    vel_b = float(prog.get("cuentasPorSegundo") or 0.0)
+                    etapa_b = prog.get("etapa")
+                    ult_b = prog.get("ultimaCuenta")
+                    desde_cache_b = bool(prog.get("desdeCache", False))
+
+                    if leidas_b > 0 or pct_b > 0:
+                        estado["leidas"] = leidas_b
+                        if est_b > 0:
+                            estado["total_estimado"] = est_b
+                        # En fase leyendo_sdk limitamos a 95% para reservar 96-100% al guardado en PostgreSQL
+                        estado["porcentaje"] = min(95.0, max(float(estado.get("porcentaje") or 2.0), pct_b))
+                        estado["velocidad"] = vel_b
+                        if etapa_b and not prog.get("terminado"):
+                            estado["etapa"] = etapa_b
+                        if ult_b:
+                            estado["ultima_cuenta"] = ult_b
+                        estado["desde_cache"] = desde_cache_b
+            except Exception:
+                pass
+
+    return {"exito": True, **estado}
 
 @configuracion_bp.route("/empresas/<int:empresa_id>/catalogo/eliminar-todo", methods=["POST"])
 @login_required

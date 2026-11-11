@@ -109,6 +109,10 @@ def exportar_polizas(payload: dict[str, Any]) -> dict[str, Any]:
 def listar_cuentas(payload: dict[str, Any]) -> dict[str, Any]:
     return _post_con_reintentos("/cuentas/listar", payload, timeout=900.0, reintentos=1)
 
+def obtener_progreso_cuentas(empresa: str) -> dict[str, Any]:
+    from urllib.parse import quote
+    return _get_con_reintentos(f"/cuentas/progreso?empresa={quote(empresa)}", timeout=5.0, reintentos=0)
+
 def listar_empresas() -> dict[str, Any]:
     return _get_con_reintentos('/empresas/listar', timeout=30.0, reintentos=0)
 

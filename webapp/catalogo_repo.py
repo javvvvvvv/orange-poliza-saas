@@ -172,7 +172,7 @@ def eliminar_todo(empresa_id):
     con.close()
 
 
-def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa):
+def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa, forzar=False, callback_etapa=None):
     """`nombre_interno_empresa` es empresas.base_datos_contpaqi (nombre
     interno de base de datos de CONTPAQi, ej. "ctNOMBRE_EMPRESA"), no la
     ruta de un archivo -- el parámetro se llamaba `ruta_contpaqi` antes,
@@ -180,13 +180,32 @@ def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa):
     from contpaqi_bridge_client import ErrorBridgeContpaqi, listar_cuentas
     from db import get_connection
     try:
-        data = listar_cuentas({"empresa": nombre_interno_empresa})
+        total_previo = 0
+        try:
+            with get_connection() as con_prev:
+                total_previo = con_prev.execute(
+                    "SELECT COUNT(*) FROM cuentas_catalogo WHERE empresa_id = ?", (empresa_id,)
+                ).fetchone()[0] or 0
+        except Exception:
+            total_previo = 0
+
+        if callback_etapa:
+            callback_etapa("leyendo_sdk", 0, total_previo)
+
+        data = listar_cuentas({
+            "empresa": nombre_interno_empresa,
+            "forzar": bool(forzar),
+            "totalEstimado": int(total_previo),
+        })
         if not data.get("exito"):
             raise Exception(data.get("mensaje", "Error desconocido del puente C#"))
         
         cuentas = data.get("cuentas", [])
         if not cuentas:
             return 0
+
+        if callback_etapa:
+            callback_etapa("guardando_bd", len(cuentas), len(cuentas))
             
         con = get_connection()
         # Eliminar anteriores
