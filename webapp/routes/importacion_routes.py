@@ -50,13 +50,39 @@ def _mover_archivo_con_reintentos(origen, destino, intentos=5, espera_segundos=0
     ultimo_error = None
     for intento in range(intentos):
         try:
+            if os.path.exists(destino):
+                try:
+                    os.chmod(destino, 0o777)
+                except OSError:
+                    pass
+                try:
+                    os.remove(destino)
+                except OSError:
+                    pass
             shutil.move(origen, destino)
+            try:
+                os.chmod(destino, 0o666)
+            except OSError:
+                pass
             return
         except (PermissionError, OSError) as e:
             ultimo_error = e
             time.sleep(espera_segundos)
     try:
+        if os.path.exists(destino):
+            try:
+                os.chmod(destino, 0o777)
+            except OSError:
+                pass
+            try:
+                os.remove(destino)
+            except OSError:
+                pass
         shutil.copy2(origen, destino)
+        try:
+            os.chmod(destino, 0o666)
+        except OSError:
+            pass
     except Exception:
         raise ultimo_error
     try:
