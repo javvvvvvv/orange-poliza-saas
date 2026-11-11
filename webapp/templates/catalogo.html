@@ -58,7 +58,7 @@
         <span class="text-[11px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-full">SDK Directo</span>
       </div>
       <div class="text-xs text-slate-500 mb-3">
-        Extrae el catálogo conectándose al SDK de CONTPAQi con caché inteligente ultrarrápido y monitoreo de avance en vivo.
+        Compara automáticamente contra el catálogo actual y descarga <strong>solo las cuentas nuevas</strong> creadas en CONTPAQi en pocos segundos.
       </div>
       {% if not base_datos_contpaqi %}
       <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3">
@@ -73,11 +73,11 @@
       <input type="hidden" name="modo" value="contpaqi">
       <label class="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
         <input type="checkbox" id="chkForzarContpaqi" name="forzar" value="1" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500">
-        <span>Forzar lectura completa desde CONTPAQi (ignorar caché rápido)</span>
+        <span>Relectura completa desde cero (lento · usar solo si borraste cuentas antiguas)</span>
       </label>
       <button type="submit" id="btnSyncContpaqi"
               class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-sm font-medium rounded-lg px-4 py-2.5 transition-colors flex items-center justify-center gap-2">
-        <span id="txtBtnSyncContpaqi">Extraer Catálogo desde CONTPAQi</span>
+        <span id="txtBtnSyncContpaqi">Actualizar Catálogo desde CONTPAQi</span>
       </button>
     </form>
   </div>

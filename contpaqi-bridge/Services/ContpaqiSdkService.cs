@@ -33,7 +33,7 @@ public sealed class ContpaqiSdkService : IDisposable
     private List<EmpresaDto>? _cacheEmpresas;
     private DateTime _cacheEmpresasExpira = DateTime.MinValue;
     private readonly ConcurrentDictionary<string, (List<CuentaDto> Cuentas, DateTime Expira)> _cacheCuentas = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, Task<List<CuentaDto>>> _enVueloCuentas = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Task<ResultadoCuentasDto>> _enVueloCuentas = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ProgresoCuentasDto> _progresoCuentas = new(StringComparer.OrdinalIgnoreCase);
 
     public ContpaqiSdkService(StaComDispatcher dispatcher, IConfiguration config, ILogger<ContpaqiSdkService> log)
@@ -52,11 +52,14 @@ public sealed class ContpaqiSdkService : IDisposable
         }
     }
 
-    private string ObtenerRutaCacheCuentas(string nombreInternoEmpresa)
-    {
-        var nombreSeguro = string.Concat(nombreInternoEmpresa.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
-        return Path.Combine(_cacheDir, $"cuentas_{nombreSeguro}.json");
-    }
+    private string LimpiarNombreArchivo(string nombreInternoEmpresa) =>
+        string.Concat(nombreInternoEmpresa.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+
+    private string ObtenerRutaCacheCuentas(string nombreInternoEmpresa) =>
+        Path.Combine(_cacheDir, $"cuentas_{LimpiarNombreArchivo(nombreInternoEmpresa)}.json");
+
+    private string ObtenerRutaMetaCuentas(string nombreInternoEmpresa) =>
+        Path.Combine(_cacheDir, $"meta_{LimpiarNombreArchivo(nombreInternoEmpresa)}.json");
 
     private List<CuentaDto>? IntentarLeerCacheDisco(string nombreInternoEmpresa, TimeSpan maxEdad)
     {
@@ -95,6 +98,84 @@ public sealed class ContpaqiSdkService : IDisposable
         }
     }
 
+    private MetaCatalogoDto? IntentarLeerMetaDisco(string nombreInternoEmpresa)
+    {
+        try
+        {
+            var ruta = ObtenerRutaMetaCuentas(nombreInternoEmpresa);
+            if (!File.Exists(ruta)) return null;
+            var json = File.ReadAllText(ruta);
+            return JsonSerializer.Deserialize<MetaCatalogoDto>(json);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void GuardarMetaDisco(string nombreInternoEmpresa, int ultimoId, int totalCuentas)
+    {
+        try
+        {
+            Directory.CreateDirectory(_cacheDir);
+            var ruta = ObtenerRutaMetaCuentas(nombreInternoEmpresa);
+            var meta = new MetaCatalogoDto(ultimoId, DateTime.UtcNow, totalCuentas);
+            File.WriteAllText(ruta, JsonSerializer.Serialize(meta));
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Aviso al guardar metadatos de catálogo para {Empresa}", nombreInternoEmpresa);
+        }
+    }
+
+    private static bool BuscarCuentaPorId(dynamic cuenta, int id)
+    {
+        try
+        {
+            int r = cuenta.buscaPorId(id);
+            return r == 1;
+        }
+        catch
+        {
+            try
+            {
+                int exito = 0;
+                cuenta.buscaPorId(id, ref exito);
+                return exito == 1;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+
+    private static int ObtenerIdCuenta(dynamic cuenta)
+    {
+        try
+        {
+            return (int)cuenta.Id;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static int BuscarIdEnVentana(dynamic cuenta, int idInicio, int ventana = 6)
+    {
+        int mayorEncontrado = 0;
+        for (int offset = 0; offset < ventana; offset++)
+        {
+            int candidato = idInicio + offset;
+            if (candidato >= 1 && BuscarCuentaPorId(cuenta, candidato))
+            {
+                mayorEncontrado = candidato;
+            }
+        }
+        return mayorEncontrado;
+    }
+
     public ProgresoCuentasDto ObtenerProgresoCuentas(string nombreInternoEmpresa)
     {
         if (_progresoCuentas.TryGetValue(nombreInternoEmpresa, out var prog))
@@ -112,10 +193,12 @@ public sealed class ContpaqiSdkService : IDisposable
                 Porcentaje: 100.0,
                 Segundos: 0.1,
                 CuentasPorSegundo: enMem.Cuentas.Count,
-                Etapa: "Catálogo disponible en caché rápido",
+                Etapa: "Catálogo sincronizado",
                 UltimaCuenta: null,
                 DesdeCache: true,
-                Error: null
+                Error: null,
+                Nuevas: 0,
+                Modo: "incremental"
             );
         }
         return new ProgresoCuentasDto(
@@ -130,7 +213,9 @@ public sealed class ContpaqiSdkService : IDisposable
             Etapa: "En espera",
             UltimaCuenta: null,
             DesdeCache: false,
-            Error: null
+            Error: null,
+            Nuevas: 0,
+            Modo: "incremental"
         );
     }
 
@@ -302,67 +387,25 @@ public sealed class ContpaqiSdkService : IDisposable
         }
     });
 
-    public async Task<List<CuentaDto>> ListarCuentasAsync(string nombreInternoEmpresa, bool forzar = false, int totalEstimado = 0)
+    public async Task<ResultadoCuentasDto> ListarCuentasConDetalleAsync(string nombreInternoEmpresa, bool forzar = false, int totalEstimado = 0)
     {
-        if (!forzar)
+        // Cargar base existente (de memoria o disco) para poder hacer sincronización incremental
+        List<CuentaDto>? baseExistente = null;
+        if (_cacheCuentas.TryGetValue(nombreInternoEmpresa, out var enMem) && enMem.Cuentas.Count > 0)
         {
-            if (_cacheCuentas.TryGetValue(nombreInternoEmpresa, out var entrada) && DateTime.UtcNow < entrada.Expira && entrada.Cuentas.Count > 0)
+            baseExistente = enMem.Cuentas;
+        }
+        else
+        {
+            baseExistente = IntentarLeerCacheDisco(nombreInternoEmpresa, TimeSpan.FromDays(365));
+            if (baseExistente is not null && baseExistente.Count > 0)
             {
-                _log.LogInformation("Retornando {N} cuentas en caché de memoria para {Empresa}", entrada.Cuentas.Count, nombreInternoEmpresa);
-                _progresoCuentas[nombreInternoEmpresa] = new ProgresoCuentasDto(
-                    nombreInternoEmpresa,
-                    EnCurso: false,
-                    Terminado: true,
-                    Leidas: entrada.Cuentas.Count,
-                    TotalEstimado: entrada.Cuentas.Count,
-                    Porcentaje: 100.0,
-                    Segundos: 0.05,
-                    CuentasPorSegundo: entrada.Cuentas.Count,
-                    Etapa: "Catálogo cargado instantáneamente desde memoria",
-                    UltimaCuenta: null,
-                    DesdeCache: true,
-                    Error: null
-                );
-                return entrada.Cuentas;
-            }
-
-            var desdeDisco = IntentarLeerCacheDisco(nombreInternoEmpresa, TimeSpan.FromHours(24));
-            if (desdeDisco is not null && desdeDisco.Count > 0)
-            {
-                _log.LogInformation("Retornando {N} cuentas desde caché en disco para {Empresa}", desdeDisco.Count, nombreInternoEmpresa);
-                _cacheCuentas[nombreInternoEmpresa] = (desdeDisco, DateTime.UtcNow.AddHours(12));
-                _progresoCuentas[nombreInternoEmpresa] = new ProgresoCuentasDto(
-                    nombreInternoEmpresa,
-                    EnCurso: false,
-                    Terminado: true,
-                    Leidas: desdeDisco.Count,
-                    TotalEstimado: desdeDisco.Count,
-                    Porcentaje: 100.0,
-                    Segundos: 0.1,
-                    CuentasPorSegundo: desdeDisco.Count,
-                    Etapa: "Catálogo cargado instantáneamente desde caché local",
-                    UltimaCuenta: null,
-                    DesdeCache: true,
-                    Error: null
-                );
-                return desdeDisco;
+                _cacheCuentas[nombreInternoEmpresa] = (baseExistente, DateTime.UtcNow.AddHours(12));
             }
         }
 
-        // Si había un caché previo (aunque expirado o forzado), usamos su tamaño como estimación exacta
-        int estimadoInicial = totalEstimado;
-        if (estimadoInicial <= 0 && _cacheCuentas.TryGetValue(nombreInternoEmpresa, out var prevCache) && prevCache.Cuentas.Count > 0)
-        {
-            estimadoInicial = prevCache.Cuentas.Count;
-        }
-        if (estimadoInicial <= 0)
-        {
-            var discoAntiguo = IntentarLeerCacheDisco(nombreInternoEmpresa, TimeSpan.FromDays(365));
-            if (discoAntiguo is not null && discoAntiguo.Count > 0)
-            {
-                estimadoInicial = discoAntiguo.Count;
-            }
-        }
+        int estimadoInicial = totalEstimado > 0 ? totalEstimado : (baseExistente?.Count ?? 0);
+        bool usarIncremental = !forzar && baseExistente is not null && baseExistente.Count > 0;
 
         if (!_enVueloCuentas.ContainsKey(nombreInternoEmpresa))
         {
@@ -370,43 +413,27 @@ public sealed class ContpaqiSdkService : IDisposable
                 nombreInternoEmpresa,
                 EnCurso: true,
                 Terminado: false,
-                Leidas: 0,
+                Leidas: usarIncremental ? baseExistente!.Count : 0,
                 TotalEstimado: estimadoInicial,
-                Porcentaje: 2.0,
+                Porcentaje: usarIncremental ? 15.0 : 2.0,
                 Segundos: 0.0,
                 CuentasPorSegundo: 0.0,
-                Etapa: "Conectando con sesión de CONTPAQi...",
+                Etapa: usarIncremental
+                    ? $"Conectando con CONTPAQi para verificar cuentas nuevas (base: {baseExistente!.Count:N0} cuentas)..."
+                    : "Conectando con sesión de CONTPAQi...",
                 UltimaCuenta: null,
                 DesdeCache: false,
-                Error: null
+                Error: null,
+                Nuevas: 0,
+                Modo: usarIncremental ? "incremental" : "completo"
             );
         }
 
-        var tarea = _enVueloCuentas.GetOrAdd(nombreInternoEmpresa, emp => _dispatcher.EjecutarAsync(() =>
+        var tarea = _enVueloCuentas.GetOrAdd(nombreInternoEmpresa, emp => _dispatcher.EjecutarAsync<ResultadoCuentasDto>(() =>
         {
-            if (!forzar && _cacheCuentas.TryGetValue(emp, out var cacheHit) && DateTime.UtcNow < cacheHit.Expira && cacheHit.Cuentas.Count > 0)
-            {
-                return cacheHit.Cuentas;
-            }
-
             var sw = Stopwatch.StartNew();
             try
             {
-                _progresoCuentas[emp] = new ProgresoCuentasDto(
-                    emp,
-                    EnCurso: true,
-                    Terminado: false,
-                    Leidas: 0,
-                    TotalEstimado: estimadoInicial,
-                    Porcentaje: 4.0,
-                    Segundos: sw.Elapsed.TotalSeconds,
-                    CuentasPorSegundo: 0.0,
-                    Etapa: $"Abriendo empresa {emp} en CONTPAQi...",
-                    UltimaCuenta: null,
-                    DesdeCache: false,
-                    Error: null
-                );
-
                 AsegurarEmpresaAbierta(emp);
 
                 var tipoCuenta = Type.GetTypeFromProgID("SDKCONTPAQNG.TSdkCuenta")!;
@@ -416,117 +443,12 @@ public sealed class ContpaqiSdkService : IDisposable
                 {
                     cuenta.setSesion(_sesion);
 
-                    var resultado = new List<CuentaDto>(estimadoInicial > 0 ? estimadoInicial : 2048);
-                    int exito = 0;
-                    string? ultimoCodigo = null;
-                    _log.LogInformation("Iniciando lectura de cuentas para {Empresa}...", emp);
-
-                    _progresoCuentas[emp] = new ProgresoCuentasDto(
-                        emp,
-                        EnCurso: true,
-                        Terminado: false,
-                        Leidas: 0,
-                        TotalEstimado: estimadoInicial,
-                        Porcentaje: 6.0,
-                        Segundos: Math.Round(sw.Elapsed.TotalSeconds, 1),
-                        CuentasPorSegundo: 0.0,
-                        Etapa: "Leyendo catálogo de cuentas desde CONTPAQi...",
-                        UltimaCuenta: null,
-                        DesdeCache: false,
-                        Error: null
-                    );
-
-                    cuenta.consultaPorCodigo_buscaPrimero(ref exito);
-                    if (exito == 1)
+                    if (usarIncremental && baseExistente is not null && baseExistente.Count > 0)
                     {
-                        do
-                        {
-                            try 
-                            {
-                                string codigo = ((string)cuenta.Codigo).Replace("\0", "").Trim();
-                                if (string.IsNullOrEmpty(codigo) || codigo == ultimoCodigo)
-                                {
-                                    break;
-                                }
-                                ultimoCodigo = codigo;
-                                string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
-                                
-                                if (codigo != "_CUADRE" && !codigo.StartsWith("_"))
-                                {
-                                    resultado.Add(new CuentaDto(codigo, nombre, null));
-                                    int n = resultado.Count;
-                                    if (n % 5 == 0 || n == 1)
-                                    {
-                                        double seg = Math.Max(0.1, sw.Elapsed.TotalSeconds);
-                                        double vel = Math.Round(n / seg, 1);
-                                        double pct;
-                                        int estActual = estimadoInicial;
-                                        if (estActual > 0)
-                                        {
-                                            if (n >= estActual)
-                                            {
-                                                estActual = n + 50;
-                                            }
-                                            pct = Math.Min(95.0, Math.Round(6.0 + ((double)n / estActual) * 89.0, 1));
-                                        }
-                                        else
-                                        {
-                                            pct = Math.Min(92.0, Math.Round(6.0 + (1.0 - Math.Exp(-n / 1800.0)) * 86.0, 1));
-                                        }
+                        return (ResultadoCuentasDto)SincronizarIncrementalPorId(emp, cuenta, baseExistente, sw);
+                    }
 
-                                        _progresoCuentas[emp] = new ProgresoCuentasDto(
-                                            emp,
-                                            EnCurso: true,
-                                            Terminado: false,
-                                            Leidas: n,
-                                            TotalEstimado: estActual,
-                                            Porcentaje: pct,
-                                            Segundos: Math.Round(seg, 1),
-                                            CuentasPorSegundo: vel,
-                                            Etapa: "Extrayendo cuentas desde CONTPAQi...",
-                                            UltimaCuenta: $"{codigo} — {nombre}",
-                                            DesdeCache: false,
-                                            Error: null
-                                        );
-                                    }
-                                    if (n % 100 == 0)
-                                    {
-                                        _log.LogInformation("Leídas {N} cuentas de {Empresa} en {Seg:F1}s (última: {Cod})", n, emp, sw.Elapsed.TotalSeconds, codigo);
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                _log.LogWarning("Error leyendo cuenta en {Empresa}: {Msg}", emp, ex.Message);
-                                break;
-                            }
-                            exito = 0;
-                            cuenta.consultaPorCodigo_buscaSiguiente(ref exito);
-                        } while (exito == 1);
-                    }
-                    sw.Stop();
-                    double segTotal = Math.Max(0.1, sw.Elapsed.TotalSeconds);
-                    _log.LogInformation("Lectura finalizada para {Empresa}: {N} cuentas en {Seg:F1}s", emp, resultado.Count, segTotal);
-                    if (resultado.Count > 0)
-                    {
-                        _cacheCuentas[emp] = (resultado, DateTime.UtcNow.AddHours(12));
-                        GuardarCacheDisco(emp, resultado);
-                    }
-                    _progresoCuentas[emp] = new ProgresoCuentasDto(
-                        emp,
-                        EnCurso: false,
-                        Terminado: true,
-                        Leidas: resultado.Count,
-                        TotalEstimado: resultado.Count,
-                        Porcentaje: 100.0,
-                        Segundos: Math.Round(segTotal, 1),
-                        CuentasPorSegundo: Math.Round(resultado.Count / segTotal, 1),
-                        Etapa: "Lectura de CONTPAQi completada",
-                        UltimaCuenta: resultado.Count > 0 ? $"{resultado[^1].Codigo} — {resultado[^1].Nombre}" : null,
-                        DesdeCache: false,
-                        Error: null
-                    );
-                    return resultado;
+                    return (ResultadoCuentasDto)LeerCatalogoCompleto(emp, cuenta, estimadoInicial, sw);
                 }
                 finally
                 {
@@ -548,7 +470,9 @@ public sealed class ContpaqiSdkService : IDisposable
                     Etapa: "Error al leer desde CONTPAQi",
                     UltimaCuenta: null,
                     DesdeCache: false,
-                    Error: ex.Message
+                    Error: ex.Message,
+                    Nuevas: 0,
+                    Modo: usarIncremental ? "incremental" : "completo"
                 );
                 throw;
             }
@@ -562,6 +486,382 @@ public sealed class ContpaqiSdkService : IDisposable
         {
             _enVueloCuentas.TryRemove(nombreInternoEmpresa, out _);
         }
+    }
+
+    private ResultadoCuentasDto SincronizarIncrementalPorId(
+        string emp,
+        dynamic cuenta,
+        List<CuentaDto> baseExistente,
+        Stopwatch sw)
+    {
+        var mapa = new Dictionary<string, CuentaDto>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in baseExistente)
+        {
+            if (!string.IsNullOrWhiteSpace(c.Codigo))
+            {
+                mapa[c.Codigo] = c;
+            }
+        }
+
+        var meta = IntentarLeerMetaDisco(emp);
+        int ultimoIdConocido = meta?.UltimoId ?? 0;
+        int nuevasOActualizadas = 0;
+        string? ultimaDetectada = null;
+
+        _log.LogInformation(
+            "Iniciando sincronización INCREMENTAL para {Empresa} (base={Base}, ultimoIdConocido={UltimoId})",
+            emp, mapa.Count, ultimoIdConocido);
+
+        _progresoCuentas[emp] = new ProgresoCuentasDto(
+            emp,
+            EnCurso: true,
+            Terminado: false,
+            Leidas: mapa.Count,
+            TotalEstimado: mapa.Count,
+            Porcentaje: 35.0,
+            Segundos: Math.Round(sw.Elapsed.TotalSeconds, 1),
+            CuentasPorSegundo: 0.0,
+            Etapa: $"Comparando catálogo en CONTPAQi contra {mapa.Count:N0} cuentas registradas...",
+            UltimaCuenta: null,
+            DesdeCache: false,
+            Error: null,
+            Nuevas: 0,
+            Modo: "incremental"
+        );
+
+        int maxIdActual = ultimoIdConocido;
+
+        if (ultimoIdConocido > 0)
+        {
+            // Caso rápido: ya conocemos el último ID de SQL Server en CONTPAQi.
+            // Solo buscamos IDs mayores a ultimoIdConocido (hasta 8 huecos consecutivos por si hubo cuentas borradas).
+            int misses = 0;
+            int idCursor = ultimoIdConocido + 1;
+            while (misses < 8)
+            {
+                if (BuscarCuentaPorId(cuenta, idCursor))
+                {
+                    misses = 0;
+                    maxIdActual = idCursor;
+                    string codigo = ((string)cuenta.Codigo).Replace("\0", "").Trim();
+                    string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
+                    if (!string.IsNullOrEmpty(codigo) && codigo != "_CUADRE" && !codigo.StartsWith("_"))
+                    {
+                        if (!mapa.TryGetValue(codigo, out var previa) || previa.Nombre != nombre)
+                        {
+                            nuevasOActualizadas++;
+                        }
+                        mapa[codigo] = new CuentaDto(codigo, nombre, previa?.AgrupadorSat);
+                        ultimaDetectada = $"{codigo} — {nombre}";
+
+                        _progresoCuentas[emp] = new ProgresoCuentasDto(
+                            emp,
+                            EnCurso: true,
+                            Terminado: false,
+                            Leidas: mapa.Count,
+                            TotalEstimado: mapa.Count,
+                            Porcentaje: 80.0,
+                            Segundos: Math.Round(sw.Elapsed.TotalSeconds, 1),
+                            CuentasPorSegundo: Math.Round(nuevasOActualizadas / Math.Max(0.1, sw.Elapsed.TotalSeconds), 1),
+                            Etapa: $"Detectada cuenta nueva #{nuevasOActualizadas}: {codigo}",
+                            UltimaCuenta: ultimaDetectada,
+                            DesdeCache: false,
+                            Error: null,
+                            Nuevas: nuevasOActualizadas,
+                            Modo: "incremental"
+                        );
+                    }
+                }
+                else
+                {
+                    misses++;
+                }
+                idCursor++;
+            }
+        }
+        else
+        {
+            // Primera calibración de UltimoId sobre un catálogo ya existente:
+            // 1) Localizamos el ID máximo en CONTPAQi con búsqueda exponencial + binaria por ventana
+            int low = Math.Max(1, mapa.Count);
+            int encontradosLow = BuscarIdEnVentana(cuenta, low, ventana: 6);
+            if (encontradosLow == 0 && low > 20)
+            {
+                low = Math.Max(1, low - 20);
+            }
+
+            int step = 32;
+            int high = low + step;
+            int ultimoHit = Math.Max(low, encontradosLow);
+
+            while ( step <= 4096 )
+            {
+                int hit = BuscarIdEnVentana(cuenta, high, ventana: 6);
+                if (hit > 0)
+                {
+                    ultimoHit = hit;
+                    low = hit;
+                    step *= 2;
+                    high = low + step;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            // Búsqueda binaria entre [low, high]
+            int izq = low;
+            int der = high;
+            while (der - izq > 8)
+            {
+                int mid = izq + (der - izq) / 2;
+                int hit = BuscarIdEnVentana(cuenta, mid, ventana: 5);
+                if (hit > 0)
+                {
+                    if (hit > ultimoHit) ultimoHit = hit;
+                    izq = hit;
+                }
+                else
+                {
+                    der = mid;
+                }
+            }
+
+            // Barrido fino hacia adelante desde izq para encontrar el último ID exacto
+            int missesAdelante = 0;
+            int cursorAdelante = Math.Max(1, izq);
+            while (missesAdelante < 15)
+            {
+                if (BuscarCuentaPorId(cuenta, cursorAdelante))
+                {
+                    missesAdelante = 0;
+                    if (cursorAdelante > ultimoHit) ultimoHit = cursorAdelante;
+                }
+                else
+                {
+                    missesAdelante++;
+                }
+                cursorAdelante++;
+            }
+
+            maxIdActual = ultimoHit;
+            _log.LogInformation("Calibrado MaxId={MaxId} para {Empresa} en {Seg:F1}s", maxIdActual, emp, sw.Elapsed.TotalSeconds);
+
+            _progresoCuentas[emp] = new ProgresoCuentasDto(
+                emp,
+                EnCurso: true,
+                Terminado: false,
+                Leidas: mapa.Count,
+                TotalEstimado: mapa.Count,
+                Porcentaje: 75.0,
+                Segundos: Math.Round(sw.Elapsed.TotalSeconds, 1),
+                CuentasPorSegundo: 0.0,
+                Etapa: $"Verificando últimas cuentas registradas en CONTPAQi (ID máx: {maxIdActual})...",
+                UltimaCuenta: null,
+                DesdeCache: false,
+                Error: null,
+                Nuevas: 0,
+                Modo: "incremental"
+            );
+
+            // 2) Caminar hacia atrás desde maxIdActual hasta encontrar 12 cuentas consecutivas que ya estaban en el catálogo
+            int conocidasConsecutivas = 0;
+            for (int id = maxIdActual; id >= 1 && conocidasConsecutivas < 12; id--)
+            {
+                if (BuscarCuentaPorId(cuenta, id))
+                {
+                    string codigo = ((string)cuenta.Codigo).Replace("\0", "").Trim();
+                    string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
+                    if (!string.IsNullOrEmpty(codigo) && codigo != "_CUADRE" && !codigo.StartsWith("_"))
+                    {
+                        if (!mapa.TryGetValue(codigo, out var previa) || previa.Nombre != nombre)
+                        {
+                            nuevasOActualizadas++;
+                            conocidasConsecutivas = 0;
+                            mapa[codigo] = new CuentaDto(codigo, nombre, previa?.AgrupadorSat);
+                            ultimaDetectada = $"{codigo} — {nombre}";
+                        }
+                        else
+                        {
+                            conocidasConsecutivas++;
+                        }
+                    }
+                }
+            }
+        }
+
+        sw.Stop();
+        var listaFinal = mapa.Values.OrderBy(c => c.Codigo, StringComparer.OrdinalIgnoreCase).ToList();
+        _cacheCuentas[emp] = (listaFinal, DateTime.UtcNow.AddHours(12));
+        GuardarCacheDisco(emp, listaFinal);
+        if (maxIdActual > 0)
+        {
+            GuardarMetaDisco(emp, maxIdActual, listaFinal.Count);
+        }
+
+        double segTotal = Math.Max(0.1, sw.Elapsed.TotalSeconds);
+        string msgEtapa = nuevasOActualizadas > 0
+            ? $"¡Sincronización incremental lista! {nuevasOActualizadas} cuenta(s) nueva(s) agregada(s) ({listaFinal.Count:N0} en total)."
+            : $"¡Catálogo al día! 0 cuentas nuevas en CONTPAQi ({listaFinal.Count:N0} cuentas verificadas en {segTotal:F1}s).";
+
+        _log.LogInformation(
+            "Sincronización incremental completada para {Empresa}: +{Nuevas} nuevas, total={Total}, maxId={MaxId} en {Seg:F1}s",
+            emp, nuevasOActualizadas, listaFinal.Count, maxIdActual, segTotal);
+
+        _progresoCuentas[emp] = new ProgresoCuentasDto(
+            emp,
+            EnCurso: false,
+            Terminado: true,
+            Leidas: listaFinal.Count,
+            TotalEstimado: listaFinal.Count,
+            Porcentaje: 100.0,
+            Segundos: Math.Round(segTotal, 1),
+            CuentasPorSegundo: Math.Round(listaFinal.Count / segTotal, 1),
+            Etapa: msgEtapa,
+            UltimaCuenta: ultimaDetectada,
+            DesdeCache: false,
+            Error: null,
+            Nuevas: nuevasOActualizadas,
+            Modo: "incremental"
+        );
+
+        return new ResultadoCuentasDto(listaFinal, nuevasOActualizadas, "incremental");
+    }
+
+    private ResultadoCuentasDto LeerCatalogoCompleto(
+        string emp,
+        dynamic cuenta,
+        int estimadoInicial,
+        Stopwatch sw)
+    {
+        var resultado = new List<CuentaDto>(estimadoInicial > 0 ? estimadoInicial : 2048);
+        int exito = 0;
+        string? ultimoCodigo = null;
+        int maxId = 0;
+        _log.LogInformation("Iniciando lectura COMPLETA de cuentas para {Empresa}...", emp);
+
+        _progresoCuentas[emp] = new ProgresoCuentasDto(
+            emp,
+            EnCurso: true,
+            Terminado: false,
+            Leidas: 0,
+            TotalEstimado: estimadoInicial,
+            Porcentaje: 6.0,
+            Segundos: Math.Round(sw.Elapsed.TotalSeconds, 1),
+            CuentasPorSegundo: 0.0,
+            Etapa: "Leyendo catálogo completo desde CONTPAQi...",
+            UltimaCuenta: null,
+            DesdeCache: false,
+            Error: null,
+            Nuevas: 0,
+            Modo: "completo"
+        );
+
+        cuenta.consultaPorCodigo_buscaPrimero(ref exito);
+        if (exito == 1)
+        {
+            do
+            {
+                try 
+                {
+                    string codigo = ((string)cuenta.Codigo).Replace("\0", "").Trim();
+                    if (string.IsNullOrEmpty(codigo) || codigo == ultimoCodigo)
+                    {
+                        break;
+                    }
+                    ultimoCodigo = codigo;
+                    string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
+                    int idActual = ObtenerIdCuenta(cuenta);
+                    if (idActual > maxId) maxId = idActual;
+                    
+                    if (codigo != "_CUADRE" && !codigo.StartsWith("_"))
+                    {
+                        resultado.Add(new CuentaDto(codigo, nombre, null));
+                        int n = resultado.Count;
+                        if (n % 5 == 0 || n == 1)
+                        {
+                            double seg = Math.Max(0.1, sw.Elapsed.TotalSeconds);
+                            double vel = Math.Round(n / seg, 1);
+                            double pct;
+                            int estActual = estimadoInicial;
+                            if (estActual > 0)
+                            {
+                                if (n >= estActual) estActual = n + 50;
+                                pct = Math.Min(95.0, Math.Round(6.0 + ((double)n / estActual) * 89.0, 1));
+                            }
+                            else
+                            {
+                                pct = Math.Min(92.0, Math.Round(6.0 + (1.0 - Math.Exp(-n / 1800.0)) * 86.0, 1));
+                            }
+
+                            _progresoCuentas[emp] = new ProgresoCuentasDto(
+                                emp,
+                                EnCurso: true,
+                                Terminado: false,
+                                Leidas: n,
+                                TotalEstimado: estActual,
+                                Porcentaje: pct,
+                                Segundos: Math.Round(seg, 1),
+                                CuentasPorSegundo: vel,
+                                Etapa: "Extrayendo cuentas desde CONTPAQi (lectura completa)...",
+                                UltimaCuenta: $"{codigo} — {nombre}",
+                                DesdeCache: false,
+                                Error: null,
+                                Nuevas: n,
+                                Modo: "completo"
+                            );
+                        }
+                        if (n % 100 == 0)
+                        {
+                            _log.LogInformation("Leídas {N} cuentas de {Empresa} en {Seg:F1}s (última: {Cod})", n, emp, sw.Elapsed.TotalSeconds, codigo);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning("Error leyendo cuenta en {Empresa}: {Msg}", emp, ex.Message);
+                    break;
+                }
+                exito = 0;
+                cuenta.consultaPorCodigo_buscaSiguiente(ref exito);
+            } while (exito == 1);
+        }
+        sw.Stop();
+        double segTotal = Math.Max(0.1, sw.Elapsed.TotalSeconds);
+        _log.LogInformation("Lectura completa finalizada para {Empresa}: {N} cuentas (maxId={MaxId}) en {Seg:F1}s", emp, resultado.Count, maxId, segTotal);
+        if (resultado.Count > 0)
+        {
+            _cacheCuentas[emp] = (resultado, DateTime.UtcNow.AddHours(12));
+            GuardarCacheDisco(emp, resultado);
+            if (maxId > 0)
+            {
+                GuardarMetaDisco(emp, maxId, resultado.Count);
+            }
+        }
+        _progresoCuentas[emp] = new ProgresoCuentasDto(
+            emp,
+            EnCurso: false,
+            Terminado: true,
+            Leidas: resultado.Count,
+            TotalEstimado: resultado.Count,
+            Porcentaje: 100.0,
+            Segundos: Math.Round(segTotal, 1),
+            CuentasPorSegundo: Math.Round(resultado.Count / segTotal, 1),
+            Etapa: $"Lectura completa de CONTPAQi finalizada ({resultado.Count:N0} cuentas)",
+            UltimaCuenta: resultado.Count > 0 ? $"{resultado[^1].Codigo} — {resultado[^1].Nombre}" : null,
+            DesdeCache: false,
+            Error: null,
+            Nuevas: resultado.Count,
+            Modo: "completo"
+        );
+        return new ResultadoCuentasDto(resultado, resultado.Count, "completo");
+    }
+
+    public async Task<List<CuentaDto>> ListarCuentasAsync(string nombreInternoEmpresa, bool forzar = false, int totalEstimado = 0)
+    {
+        var res = await ListarCuentasConDetalleAsync(nombreInternoEmpresa, forzar, totalEstimado);
+        return res.Cuentas;
     }
 
     public Task<RespuestaBridge> CrearPolizasAsync(string nombreInternoEmpresa, List<PolizaDto> polizas)

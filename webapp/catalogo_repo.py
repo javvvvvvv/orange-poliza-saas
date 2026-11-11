@@ -172,6 +172,14 @@ def eliminar_todo(empresa_id):
     con.close()
 
 
+class TotalCuentasSincronizadas(int):
+    def __new__(cls, total, nuevas=0, modo="incremental"):
+        inst = super().__new__(cls, int(total))
+        inst.nuevas = int(nuevas)
+        inst.modo = str(modo or "incremental")
+        return inst
+
+
 def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa, forzar=False, callback_etapa=None):
     """`nombre_interno_empresa` es empresas.base_datos_contpaqi (nombre
     interno de base de datos de CONTPAQi, ej. "ctNOMBRE_EMPRESA"), no la
@@ -201,16 +209,11 @@ def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa, forzar=False,
             raise Exception(data.get("mensaje", "Error desconocido del puente C#"))
         
         cuentas = data.get("cuentas", [])
+        nuevas_sdk = int(data.get("nuevas") or 0)
+        modo_sdk = str(data.get("modo") or ("completo" if forzar else "incremental"))
         if not cuentas:
-            return 0
+            return TotalCuentasSincronizadas(0, nuevas=0, modo=modo_sdk)
 
-        if callback_etapa:
-            callback_etapa("guardando_bd", len(cuentas), len(cuentas))
-            
-        con = get_connection()
-        # Eliminar anteriores
-        con.execute("DELETE FROM cuentas_catalogo WHERE empresa_id = ?", (empresa_id,))
-        
         limpias = {}
         agrupadores = {}
         for c in cuentas:
@@ -221,6 +224,18 @@ def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa, forzar=False,
             if _cod and _cod != "_CUADRE" and not _cod.startswith("_"):
                 limpias[_cod] = _nom
                 agrupadores[_cod] = _agr
+
+        # Optimización: si fue sincronización incremental, no hubo cuentas nuevas en CONTPAQi
+        # y la base de datos ya tiene todas las cuentas cargadas, no reescribimos toda la tabla.
+        if not forzar and modo_sdk == "incremental" and nuevas_sdk == 0 and total_previo == len(limpias):
+            return TotalCuentasSincronizadas(len(limpias), nuevas=0, modo="incremental")
+
+        if callback_etapa:
+            callback_etapa("guardando_bd", len(limpias), len(limpias))
+            
+        con = get_connection()
+        if forzar:
+            con.execute("DELETE FROM cuentas_catalogo WHERE empresa_id = ?", (empresa_id,))
 
         filas_jerarquia = _inferir_jerarquia(list(limpias.items()))
         insert_data = [
@@ -240,6 +255,7 @@ def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa, forzar=False,
         )
         con.commit()
         con.close()
-        return len(insert_data)
+        nuevas_reales = nuevas_sdk if modo_sdk == "incremental" else max(0, len(insert_data) - total_previo)
+        return TotalCuentasSincronizadas(len(insert_data), nuevas=nuevas_reales, modo=modo_sdk)
     except Exception as e:
         raise Exception(f"No se pudo sincronizar con CONTPAQi: {str(e)}")

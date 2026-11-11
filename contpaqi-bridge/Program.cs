@@ -129,8 +129,15 @@ app.MapPost("/cuentas/listar", async (CuentasRequest req, ContpaqiSdkService sdk
     }
     try
     {
-        var cuentas = await sdk.ListarCuentasAsync(req.Empresa, req.Forzar, req.TotalEstimado);
-        return Results.Ok(new { exito = true, mensaje = "OK", cuentas });
+        var res = await sdk.ListarCuentasConDetalleAsync(req.Empresa, req.Forzar, req.TotalEstimado);
+        return Results.Ok(new
+        {
+            exito = true,
+            mensaje = "OK",
+            cuentas = res.Cuentas,
+            nuevas = res.Nuevas,
+            modo = res.Modo
+        });
     }
     catch (Exception ex)
     {

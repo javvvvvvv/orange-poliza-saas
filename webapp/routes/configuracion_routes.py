@@ -227,19 +227,30 @@ def catalogo_sincronizar_async(empresa_id):
                 forzar=forzar,
                 callback_etapa=_on_etapa,
             )
+            nuevas = int(getattr(total, "nuevas", 0))
+            modo_sync = str(getattr(total, "modo", "incremental"))
             duracion = round(max(0.1, time.time() - t0), 1)
             est_fin = _leer_estado_sync(empresa_id) or dict(estado_inicial)
+            if modo_sync == "incremental":
+                if nuevas > 0:
+                    msg_etapa = f"¡Catálogo actualizado! +{nuevas:,} cuenta(s) nueva(s) agregada(s) ({int(total):,} en total)."
+                else:
+                    msg_etapa = f"¡Catálogo al día! No se encontraron cuentas nuevas en CONTPAQi ({int(total):,} cuentas)."
+            else:
+                msg_etapa = f"¡Catálogo sincronizado! {int(total):,} cuentas listas."
             est_fin.update({
                 "en_curso": False,
                 "terminado": True,
                 "fase": "completado",
-                "etapa": f"¡Catálogo sincronizado! {total:,} cuentas listas.",
+                "etapa": msg_etapa,
                 "leidas": int(total),
                 "total_estimado": int(total),
                 "importadas": int(total),
+                "nuevas": nuevas,
+                "modo": modo_sync,
                 "porcentaje": 100.0,
                 "segundos": duracion,
-                "velocidad": round(total / duracion, 1) if duracion > 0 else total,
+                "velocidad": round(int(total) / duracion, 1) if duracion > 0 else int(total),
                 "error": None,
             })
             _guardar_estado_sync(empresa_id, est_fin)

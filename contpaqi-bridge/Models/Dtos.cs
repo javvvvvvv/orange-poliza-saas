@@ -21,6 +21,10 @@ public record ExportarPolizasRequest(string Empresa, List<PolizaDto> Polizas);
 
 public record CuentasRequest(string Empresa, bool Forzar = false, int TotalEstimado = 0);
 
+public record MetaCatalogoDto(int UltimoId, DateTime UltimaSincronizacionUtc, int TotalCuentas);
+
+public record ResultadoCuentasDto(List<CuentaDto> Cuentas, int Nuevas, string Modo);
+
 public record ProgresoCuentasDto(
     string Empresa,
     bool EnCurso,
@@ -33,7 +37,9 @@ public record ProgresoCuentasDto(
     string Etapa,
     string? UltimaCuenta,
     bool DesdeCache,
-    string? Error
+    string? Error,
+    int Nuevas = 0,
+    string Modo = "incremental"
 );
 
 public record RespuestaBridge(bool Exito, string Mensaje, object? Datos = null);
