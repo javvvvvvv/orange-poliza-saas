@@ -704,7 +704,7 @@ def crear_polizas_anticipo(empresa_id: int, movimiento_id: int, cfdi_ids: list, 
         mes_cfdi = fecha_cfdi[:7]
         fecha_aplicacion = f"{mes_cfdi}-01"
 
-        folios = ", ".join(f"{c['serie'] or ''}{c['folio'] or ''}".strip() for c in cfdis if f"{c['serie'] or ''}{c['folio'] or ''}".strip())
+        folios = ", ".join(list(dict.fromkeys(f"{c['serie'] or ''}{c['folio'] or ''}".strip() for c in cfdis if f"{c['serie'] or ''}{c['folio'] or ''}".strip())))
         persona_nombre = (cfdi_principal["nombre_receptor" if tipo_mov == "ingreso" else "nombre_emisor"] or 
                           cfdi_principal["rfc_receptor" if tipo_mov == "ingreso" else "rfc_emisor"] or "").strip()
 

@@ -606,7 +606,7 @@ def documento_movimientos_json(empresa_id, documento_id):
             """SELECT m.id, m.fecha, m.descripcion, m.tipo, m.total, m.rfc_contraparte, m.referencia_bancaria,
                       m.numero_factura, m.estado_clasificacion, m.poliza_id,
                       (
-                          SELECT string_agg(COALESCE(c.serie, '') || COALESCE(c.folio, 'S/F'), ', ')
+                          SELECT string_agg(DISTINCT COALESCE(NULLIF(TRIM(COALESCE(c.serie, '') || COALESCE(c.folio, '')), ''), 'S/F'), ', ')
                           FROM cfdi_movimiento cm
                           JOIN cfdis c ON c.id = cm.cfdi_id
                           WHERE cm.movimiento_id = m.id AND cm.confirmado = 1
@@ -857,7 +857,7 @@ def movimiento_asociar_cfdi(empresa_id, movimiento_id):
 
     if isinstance(cfdi_ids, (int, str)):
         cfdi_ids = [int(cfdi_ids)]
-    cfdi_ids = [int(cid) for cid in cfdi_ids if str(cid).isdigit()]
+    cfdi_ids = list(dict.fromkeys(int(cid) for cid in cfdi_ids if str(cid).isdigit()))
 
     if not cfdi_ids:
         return jsonify({"ok": False, "error": "Selecciona al menos una factura CFDI para asociar."}), 400
@@ -875,33 +875,50 @@ def movimiento_asociar_cfdi(empresa_id, movimiento_id):
         rfc_empresa = (empresa["rfc"] if empresa else "") or ""
 
         placeholders = ",".join(["%s"] * len(cfdi_ids))
-        cfdis = cur.execute(
-            f"SELECT * FROM cfdis WHERE id IN ({placeholders}) AND empresa_id = %s",
+        cfdis_raw = cur.execute(
+            f"SELECT * FROM cfdis WHERE id IN ({placeholders}) AND empresa_id = %s ORDER BY fecha ASC, id ASC",
             tuple(cfdi_ids + [empresa_id])
         ).fetchall()
 
-        if not cfdis:
+        if not cfdis_raw:
             return jsonify({"ok": False, "error": "No se encontraron las facturas indicadas."}), 404
 
-        ya_aplicado_mov = cur.execute(
-            "SELECT COALESCE(SUM(importe_aplicado), 0) FROM cfdi_movimiento WHERE movimiento_id = %s AND confirmado = 1",
-            (movimiento_id,)
-        ).fetchone()[0] or 0.0
+        # Deduplicar facturas para que no existan dos CFDIs con la misma serie y folio en este movimiento
+        cfdis = []
+        folios_unicos = set()
+        for c in cfdis_raw:
+            key_f = f"{(c['serie'] or '').strip().upper()}_{(c['folio'] or '').strip().upper()}"
+            if key_f and key_f in folios_unicos:
+                continue
+            if key_f:
+                folios_unicos.add(key_f)
+            cfdis.append(c)
 
-        saldo_mov = max(0.0, float(mov["total"]) - float(ya_aplicado_mov))
+        # Limpiar asociaciones previas de este movimiento que ya NO estén en la selección actual
+        cfdi_ids_validos = [c["id"] for c in cfdis]
+        placeholders_validos = ",".join(["%s"] * len(cfdi_ids_validos))
+        cur.execute(
+            f"DELETE FROM cfdi_movimiento WHERE movimiento_id = %s AND cfdi_id NOT IN ({placeholders_validos})",
+            tuple([movimiento_id] + cfdi_ids_validos)
+        )
+
+        saldo_mov = float(mov["total"] or 0.0)
         grupo_id = uuid.uuid4().hex
-        folios_agregados = []
         contraparte_rfc = None
 
         for c in cfdis:
             c_tot = float(c["total"] or 0.0)
-            apl_cfdi = cur.execute(
-                "SELECT COALESCE(SUM(importe_aplicado), 0) FROM cfdi_movimiento WHERE cfdi_id = %s AND confirmado = 1",
-                (c["id"],)
+            # Saldo disponible del CFDI excluyendo este movimiento
+            apl_otro = cur.execute(
+                "SELECT COALESCE(SUM(importe_aplicado), 0) FROM cfdi_movimiento WHERE cfdi_id = %s AND movimiento_id != %s AND confirmado = 1",
+                (c["id"], movimiento_id)
             ).fetchone()[0] or 0.0
-            saldo_cfdi = max(0.0, c_tot - float(apl_cfdi))
+            saldo_cfdi = max(0.0, c_tot - float(apl_otro))
 
-            importe_aplicar = min(saldo_cfdi, saldo_mov) if saldo_mov > 0 and saldo_cfdi > 0 else (c_tot if c_tot > 0 else float(mov["total"]))
+            if saldo_mov > 0:
+                importe_aplicar = min(saldo_cfdi, saldo_mov) if saldo_cfdi > 0 else min(c_tot, saldo_mov)
+            else:
+                importe_aplicar = 0.0
             saldo_mov = max(0.0, saldo_mov - importe_aplicar)
 
             cur.execute(
@@ -914,19 +931,16 @@ def movimiento_asociar_cfdi(empresa_id, movimiento_id):
                     motivo = 'Asociación manual confirmada por el usuario'""",
                 (grupo_id, c["id"], movimiento_id, importe_aplicar)
             )
-            f_str = f"{c['serie'] or ''}{c['folio'] or ''}".strip()
-            if f_str:
-                folios_agregados.append(f_str)
             if not contraparte_rfc:
                 contraparte_rfc = c["rfc_receptor"] if c["rfc_emisor"] == rfc_empresa else c["rfc_emisor"]
 
         todos_folios = cur.execute(
-            """SELECT DISTINCT COALESCE(c.serie, '') || COALESCE(c.folio, '') AS fol
+            """SELECT DISTINCT COALESCE(NULLIF(TRIM(COALESCE(c.serie, '') || COALESCE(c.folio, '')), ''), 'S/F') AS fol
                FROM cfdi_movimiento cm JOIN cfdis c ON c.id = cm.cfdi_id
                WHERE cm.movimiento_id = %s AND cm.confirmado = 1""",
             (movimiento_id,)
         ).fetchall()
-        lista_folios = [r["fol"].strip() for r in todos_folios if r["fol"] and r["fol"].strip()]
+        lista_folios = list(dict.fromkeys(r["fol"].strip() for r in todos_folios if r["fol"] and r["fol"].strip()))
         str_folios = ", ".join(lista_folios)
 
         cur.execute(
@@ -1191,7 +1205,7 @@ def movimientos_lista(empresa_id):
                    p_ap.numero AS poliza_aplicacion_numero,
                    p_ap.tipo AS poliza_aplicacion_tipo,
                    (
-                       SELECT string_agg(COALESCE(c.serie, '') || COALESCE(c.folio, 'S/F'), ', ')
+                       SELECT string_agg(DISTINCT COALESCE(NULLIF(TRIM(COALESCE(c.serie, '') || COALESCE(c.folio, '')), ''), 'S/F'), ', ')
                        FROM cfdi_movimiento cm
                        JOIN cfdis c ON c.id = cm.cfdi_id
                        WHERE cm.movimiento_id = m.id AND cm.confirmado = 1

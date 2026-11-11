@@ -209,7 +209,12 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
                  1 if auto_confirmar else 0),
             )
             if auto_confirmar:
-                folio = f"{aplicacion.cfdi.serie or ''}{aplicacion.cfdi.folio or ''}".strip() or aplicacion.cfdi.uuid[:8]
+                # Deduplicar folios de todas las aplicaciones de esta propuesta para que no se sobreescriban ni repitan
+                folios_prop = list(dict.fromkeys(
+                    f"{a.cfdi.serie or ''}{a.cfdi.folio or ''}".strip() or a.cfdi.uuid[:8]
+                    for a in propuesta.aplicaciones if f"{a.cfdi.serie or ''}{a.cfdi.folio or ''}".strip() or a.cfdi.uuid
+                ))
+                folio = ", ".join(folios_prop)
                 rfc_contraparte = (
                     aplicacion.cfdi.rfc_emisor if aplicacion.cfdi.rfc_receptor == rfc_empresa.strip().upper()
                     else aplicacion.cfdi.rfc_receptor

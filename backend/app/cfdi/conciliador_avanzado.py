@@ -70,12 +70,14 @@ def extraer_tokens_facturas(texto_raw: str) -> list[dict]:
     Extrae folios, series+folios y fragmentos de factura de un texto libre o campo
     de número de factura. Soporta separadores comunes como '/', ',', ';', '&', ' y ',
     saltos de línea, y prefijos como 'A CUENTA', 'A CTA', 'PAGO FACTURAS', 'FACTURA', etc.
+    Deduplica tokens para no buscar el mismo folio repetidas veces.
     """
     if not texto_raw:
         return []
     import re
     texto = str(texto_raw).strip()
-    partes_crudas = re.split(r'[\r\n|,;]+|\s+/\s+|\s*[/]+\s*|\s+y\s+|\s+e\s+|\s*&\s*', texto, flags=re.IGNORECASE)
+    # Separar por comas, punto y coma, saltos de línea, ' y ', ' e ', '&' o ' / ' (con espacios)
+    partes_crudas = re.split(r'[\r\n|,;]+|\s+/\s+|\s+y\s+|\s+e\s+|\s*&\s*', texto, flags=re.IGNORECASE)
     
     tokens = []
     serie_contexto = ""
@@ -122,7 +124,16 @@ def extraer_tokens_facturas(texto_raw: str) -> list[dict]:
             "solo_digitos": re.sub(r'\D', '', p_sin_prefijo),
         })
 
-    return tokens
+    # Deduplicar tokens por (serie, folio, limpio)
+    vistos = set()
+    tokens_unicos = []
+    for t in tokens:
+        clave = (t["serie"], t["folio"], t["limpio"])
+        if clave not in vistos:
+            vistos.add(clave)
+            tokens_unicos.append(t)
+
+    return tokens_unicos
 
 
 def cfdi_coincide_con_token(cfdi: CFDI, token: dict) -> bool:
@@ -191,11 +202,26 @@ def conciliar_avanzado(
             rfc_mov = ""
 
         cfdis_coincidentes = []
+        folios_en_mov = set()
+        uuids_en_mov = set()
+        total_mov_float = float(mov["total"] or 0.0)
+        monto_acumulado = 0.0
+
         for token in tokens:
+            # Si el movimiento ya está 100% cubierto por las facturas encontradas, no seguir asociando más
+            if monto_acumulado >= total_mov_float - 0.01 and len(cfdis_coincidentes) > 0:
+                break
+
             for cfdi in cfdis:
-                if cfdi.uuid in cfdis_usados_en_folios:
+                if cfdi.uuid in cfdis_usados_en_folios or cfdi.uuid in uuids_en_mov:
                     continue
-                if getattr(cfdi, "tipo_comprobante", "I") not in ("I", "P"):
+                # Descartar complementos de pago tipo P (solo facturas I, E, N)
+                if getattr(cfdi, "tipo_comprobante", "I") in ("P",):
+                    continue
+
+                # Evitar asociar dos CFDIs con la MISMA serie y folio al mismo movimiento
+                key_folio = f"{(cfdi.serie or '').strip().upper()}_{(cfdi.folio or '').strip().upper()}"
+                if key_folio and key_folio in folios_en_mov:
                     continue
 
                 tipo = tipo_por_uuid.get(cfdi.uuid) or clasificar_cfdi(cfdi, rfc_empresa)
@@ -211,6 +237,10 @@ def conciliar_avanzado(
                 if cfdi_coincide_con_token(cfdi, token):
                     cfdis_coincidentes.append(cfdi)
                     cfdis_usados_en_folios.add(cfdi.uuid)
+                    uuids_en_mov.add(cfdi.uuid)
+                    if key_folio:
+                        folios_en_mov.add(key_folio)
+                    monto_acumulado += float(cfdi.total or 0.0)
                     break
 
         if cfdis_coincidentes:
@@ -484,8 +514,8 @@ def conciliar_avanzado(
                 if serie_limpia and (serie_limpia + folio_limpio) in desc_limpia:
                     match_texto = True
                     motivo_texto = f"El estado de cuenta menciona el folio {cfdi.serie}{cfdi.folio}."
-                # O si solo menciona el folio (y es razonablemente largo para no ser falso positivo)
-                elif len(folio_limpio) >= 3 and folio_limpio in desc_limpia:
+                # O si solo menciona el folio como palabra completa (al menos 4 caracteres y no parte de un año como 2025/2026)
+                elif len(folio_limpio) >= 4 and re.search(r'\b' + re.escape(cfdi.folio.strip()) + r'\b', f"{mov.get('descripcion', '')} {mov.get('numero_factura', '')}", re.IGNORECASE):
                     match_texto = True
                     motivo_texto = f"El estado de cuenta menciona el folio {cfdi.folio}."
 

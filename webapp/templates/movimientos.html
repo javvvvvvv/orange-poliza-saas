@@ -1038,10 +1038,15 @@ function actualizarContadorSeleccion() {
 
 async function confirmarAsociacion() {
     if (!movActualId) return;
-    const chks = Array.from(document.querySelectorAll('.cfdi-checkbox:checked')).map(c => parseInt(c.value));
+    const chks = Array.from(new Set(Array.from(document.querySelectorAll('.cfdi-checkbox:checked')).map(c => parseInt(c.value))));
     if (chks.length === 0) {
         alert("Selecciona al menos una factura CFDI.");
         return;
+    }
+    const btnConfirmar = document.querySelector('button[onclick="confirmarAsociacion()"]');
+    if (btnConfirmar) {
+        btnConfirmar.disabled = true;
+        btnConfirmar.innerText = 'Asociando...';
     }
 
     const contraCuenta = document.getElementById('asoc-contra-cuenta').value.trim();

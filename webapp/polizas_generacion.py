@@ -43,7 +43,7 @@ def _concepto_y_referencia(fila, cfdis):
         return formatear_concepto_poliza(concepto, tiene_cfdi, tiene_iva), referencia
 
     if len(cfdis) > 1:
-        folios = [(c["folio"] or "").strip() or "U" + c["uuid"][-4:] for c in cfdis]
+        folios = list(dict.fromkeys((c["folio"] or "").strip() or "U" + c["uuid"][-4:] for c in cfdis if (c["folio"] or "").strip() or c.get("uuid")))
         referencia = ", ".join(folios)[:50]
     else:
         folio = (cfdis[0]["folio"] or "").strip()
