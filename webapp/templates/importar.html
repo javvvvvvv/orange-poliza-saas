@@ -1,22 +1,143 @@
 {% extends "base.html" %}
 {% block titulo %}Importar{% endblock %}
 {% block contenido %}
-<h1 class="text-xl font-semibold text-marino-900 mb-2">Importar estado de cuenta</h1>
+<h1 class="text-xl font-semibold text-marino-900 mb-2">Importar estado de cuenta y facturas CFDI</h1>
 <p class="text-sm text-slate-500 mb-6">
-  Paso 2 del flujo. Sube el Excel del banco; en el siguiente paso verás
-  una vista previa para indicar qué columna es cuál.
+  Paso 2 del flujo. Sube el Excel del banco para generar pólizas, o descarga automáticamente tus facturas CFDI desde el Almacén Digital (ADD) de CONTPAQi.
 </p>
 
+<!-- SECCIÓN DESTACADA: DESCARGA DIRECTA DE CFDIS DESDE CONTPAQi -->
+<div class="bg-gradient-to-br from-orange-50 via-amber-50 to-orange-100/60 border border-amber-300/80 rounded-2xl p-6 mb-8 shadow-sm">
+  <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-orange-600 text-white flex items-center justify-center font-bold text-lg shadow-sm">
+        📥
+      </div>
+      <div>
+        <div class="text-base font-bold text-marino-900">Descargar Facturas CFDI directamente desde CONTPAQi (ADD)</div>
+        <div class="text-xs text-slate-600">
+          Sincroniza tus facturas electrónicas vía red/Hamachi. Detecta facturas nuevas en milisegundos y las concilia con tus movimientos bancarios.
+        </div>
+      </div>
+    </div>
+    <span class="text-xs font-semibold bg-orange-200/80 text-orange-900 border border-orange-300 px-3 py-1 rounded-full shadow-2xs">
+      ⚡ Directo del Almacén Digital
+    </span>
+  </div>
+
+  <div class="bg-white/80 backdrop-blur-xs border border-amber-200/90 rounded-xl p-5 mt-4">
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+      <!-- Selector de Periodo -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-700 mb-1.5">Período a descargar</label>
+        <select id="selPeriodoCfdi" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white focus:ring-2 focus:ring-orange-500">
+          <option value="mes_actual" selected>Mes actual (Noviembre 2026)</option>
+          <option value="mes_anterior">Mes anterior (Octubre 2026)</option>
+          <option value="anio_actual">Año actual (2026 completo)</option>
+          <option value="custom">Rango personalizado...</option>
+          <option value="todo">Todos los registros históricos</option>
+        </select>
+      </div>
+
+      <!-- Fechas personalizadas (inicialmente ocultas) -->
+      <div id="colFechaInicio" class="hidden">
+        <label class="block text-xs font-semibold text-slate-700 mb-1.5">Fecha inicio</label>
+        <input type="date" id="txtFechaInicio" class="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-xs bg-white focus:ring-2 focus:ring-orange-500">
+      </div>
+
+      <div id="colFechaFin" class="hidden">
+        <label class="block text-xs font-semibold text-slate-700 mb-1.5">Fecha fin</label>
+        <input type="date" id="txtFechaFin" class="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-xs bg-white focus:ring-2 focus:ring-orange-500">
+      </div>
+
+      <!-- Tipo de Comprobante -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-700 mb-1.5">Tipo de comprobante</label>
+        <select id="selTipoCfdi" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white focus:ring-2 focus:ring-orange-500">
+          <option value="todos" selected>Emitidos y Recibidos (Todos)</option>
+          <option value="emitido">Solo Emitidos (Clientes)</option>
+          <option value="recibido">Solo Recibidos (Proveedores)</option>
+        </select>
+      </div>
+
+      <!-- Botón de Acción -->
+      <div>
+        <button id="btnDescargarContpaqi" type="button"
+                class="w-full bg-orange-600 hover:bg-orange-700 disabled:bg-slate-300 text-white text-xs font-bold rounded-lg px-4 py-2.5 shadow-sm transition-all flex items-center justify-center gap-2">
+          <span id="iconoBtnDescargar">⚡</span>
+          <span id="textoBtnDescargar">Sincronizar desde CONTPAQi</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PANEL DE PROGRESO EN VIVO -->
+  <div id="panelProgresoCfdi" class="hidden bg-white border border-amber-200 rounded-xl p-5 mt-4 shadow-sm">
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-3">
+        <div id="spinnerCfdi" class="w-5 h-5 border-2 border-orange-600 border-t-transparent rounded-full animate-spin"></div>
+        <div>
+          <div id="tituloEtapaCfdi" class="text-sm font-bold text-marino-900">Iniciando conexión con CONTPAQi ADD...</div>
+          <div id="subtituloCfdi" class="text-xs text-slate-500">Descargando y verificando facturas electrónicas</div>
+        </div>
+      </div>
+      <div id="badgePorcentajeCfdi" class="text-base font-extrabold text-orange-700 bg-orange-50 border border-orange-200 px-3 py-1 rounded-lg">
+        0%
+      </div>
+    </div>
+
+    <!-- Barra de progreso fill -->
+    <div class="w-full bg-slate-100 rounded-full h-3.5 overflow-hidden mb-4 border border-slate-200">
+      <div id="barraProgresoFillCfdi"
+           class="bg-gradient-to-r from-orange-500 via-amber-500 to-orange-600 h-full rounded-full transition-all duration-300 ease-out"
+           style="width: 2%"></div>
+    </div>
+
+    <!-- Métricas en vivo -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-2">
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Total en CONTPAQi</div>
+        <div id="metricaTotalCfdi" class="text-base font-bold text-slate-800 mt-0.5">0</div>
+      </div>
+      <div class="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+        <div class="text-[11px] uppercase tracking-wider text-emerald-600 font-semibold">Nuevos importados</div>
+        <div id="metricaNuevosCfdi" class="text-base font-bold text-emerald-700 mt-0.5">0</div>
+      </div>
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-3">
+        <div class="text-[11px] uppercase tracking-wider text-blue-600 font-semibold">Ya existentes (omitidos)</div>
+        <div id="metricaOmitidosCfdi" class="text-base font-bold text-blue-700 mt-0.5">0</div>
+      </div>
+      <div class="bg-purple-50 border border-purple-200 rounded-lg p-3">
+        <div class="text-[11px] uppercase tracking-wider text-purple-600 font-semibold">Conciliados con bancos</div>
+        <div id="metricaConciliadosCfdi" class="text-base font-bold text-purple-700 mt-0.5">0</div>
+      </div>
+    </div>
+
+    <!-- Mensaje final y acciones -->
+    <div id="bannerFinalCfdi" class="hidden mt-3 p-3 rounded-lg text-xs font-medium flex items-center justify-between">
+      <div id="textoBannerFinalCfdi"></div>
+      <div class="flex gap-2">
+        <a href="/empresas/{{ request.view_args.empresa_id }}/conciliaciones" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-md font-bold text-xs">
+          Ver Conciliaciones
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SUBIDA DE ESTADO DE CUENTA BANCARIO -->
 <div class="bg-white border border-slate-200 rounded-xl p-6 mb-8">
-  <div class="font-medium text-marino-900 mb-4">Estado de cuenta (Excel)</div>
+  <div class="font-medium text-marino-900 mb-2">Estado de cuenta (Excel / PDF)</div>
+  <p class="text-xs text-slate-500 mb-4">
+    Sube el archivo de movimientos del banco. En la siguiente pantalla podrás validar qué columna corresponde a fecha, concepto e importes.
+  </p>
   <form method="post" action="/empresas/{{ request.view_args.empresa_id }}/importar/vista-previa" enctype="multipart/form-data" class="space-y-4">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div>
       <label class="block text-sm text-slate-600 mb-1">Archivo(s)</label>
       <input type="file" name="archivos_excel" accept=".xlsx,.xls,.pdf" multiple required class="w-full text-sm">
       <div class="text-xs text-slate-400 mt-1">
-        Puedes seleccionar varios a la vez si son del mismo banco y formato;
-        la vista previa se arma con el primero.
+        Puedes seleccionar varios a la vez si son del mismo banco y formato; la vista previa se arma con el primero.
       </div>
     </div>
 
@@ -31,8 +152,7 @@
       {% if not bancos %}
       <div class="text-xs text-amber-600 mt-1">
         No tienes bancos configurados todavía.
-        <a href="/empresas/{{ request.view_args.empresa_id }}/configuracion" class="underline">Configúralos aquí</a>
-        (opcional, pero recomendado).
+        <a href="/empresas/{{ request.view_args.empresa_id }}/configuracion" class="underline">Configúralos aquí</a> (opcional, pero recomendado).
       </div>
       {% endif %}
     </div>
@@ -43,42 +163,184 @@
   </form>
 </div>
 
+<!-- SUBIDA MANUAL DE CFDIS (ARCHIVOS LOCALES O ZIP) -->
 <div class="bg-white border border-slate-200 rounded-xl p-6">
   <div class="flex items-center gap-2 mb-1">
-    <div class="font-medium text-marino-900">CFDI (facturas XML)</div>
-    <span class="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">Opcional</span>
+    <div class="font-medium text-marino-900">Subir XMLs manualmente desde la computadora</div>
+    <span class="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">Alternativa</span>
   </div>
-  <p class="text-sm text-slate-500 mb-4">
-    El sistema procesa el estado de cuenta perfectamente sin esto. Si subes
-    los XML, además va a buscar si alguno coincide con un movimiento por
-    RFC, importe y fecha, y asociarlo automáticamente (incluyendo pagos
-    parciales o varias facturas en un solo pago). Puedes hacerlo ahora,
-    después, o nunca — no bloquea nada del flujo.
+  <p class="text-xs text-slate-500 mb-4">
+    Si tienes archivos XML sueltos en tu computadora o en un archivo ZIP, también puedes subirlos manualmente aquí:
   </p>
 
-  <div class="grid grid-cols-2 gap-4">
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
     <form method="post" action="/empresas/{{ request.view_args.empresa_id }}/importar-cfdi" enctype="multipart/form-data" class="space-y-3 border border-slate-200 rounded-lg p-4">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="tipo_hint" value="emitido">
       <div class="text-sm font-medium text-slate-700">CFDI Emitidos</div>
       <div class="text-xs text-slate-400">Facturas que tú emitiste a tus clientes.</div>
       <input type="file" name="archivos_cfdi" accept=".xml,.zip" multiple class="w-full text-sm">
       <button class="w-full bg-marino-800 hover:bg-marino-700 text-white text-sm font-medium rounded-lg px-4 py-2">
-        Importar emitidos
+        Subir emitidos
       </button>
     </form>
 
     <form method="post" action="/empresas/{{ request.view_args.empresa_id }}/importar-cfdi" enctype="multipart/form-data" class="space-y-3 border border-slate-200 rounded-lg p-4">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="tipo_hint" value="recibido">
       <div class="text-sm font-medium text-slate-700">CFDI Recibidos</div>
       <div class="text-xs text-slate-400">Facturas que tus proveedores te emitieron a ti.</div>
       <input type="file" name="archivos_cfdi" accept=".xml,.zip" multiple class="w-full text-sm">
       <button class="w-full bg-marino-800 hover:bg-marino-700 text-white text-sm font-medium rounded-lg px-4 py-2">
-        Importar recibidos
+        Subir recibidos
       </button>
     </form>
   </div>
 </div>
-{% endblock %}
 
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const empresaId = {{ request.view_args.empresa_id }};
+  const csrfToken = "{{ csrf_token() }}";
+
+  const selPeriodo = document.getElementById('selPeriodoCfdi');
+  const colFechaInicio = document.getElementById('colFechaInicio');
+  const colFechaFin = document.getElementById('colFechaFin');
+  const txtFechaInicio = document.getElementById('txtFechaInicio');
+  const txtFechaFin = document.getElementById('txtFechaFin');
+  const selTipo = document.getElementById('selTipoCfdi');
+  const btnDescargar = document.getElementById('btnDescargarContpaqi');
+  const textoBtn = document.getElementById('textoBtnDescargar');
+
+  const panelProgreso = document.getElementById('panelProgresoCfdi');
+  const spinner = document.getElementById('spinnerCfdi');
+  const tituloEtapa = document.getElementById('tituloEtapaCfdi');
+  const subtitulo = document.getElementById('subtituloCfdi');
+  const badgePorcentaje = document.getElementById('badgePorcentajeCfdi');
+  const barraFill = document.getElementById('barraProgresoFillCfdi');
+
+  const metTotal = document.getElementById('metricaTotalCfdi');
+  const metNuevos = document.getElementById('metricaNuevosCfdi');
+  const metOmitidos = document.getElementById('metricaOmitidosCfdi');
+  const metConciliados = document.getElementById('metricaConciliadosCfdi');
+  const bannerFinal = document.getElementById('bannerFinalCfdi');
+  const textoBannerFinal = document.getElementById('textoBannerFinalCfdi');
+
+  let pollInterval = null;
+
+  // Toggle fechas personalizadas
+  selPeriodo.addEventListener('change', function() {
+    if (this.value === 'custom') {
+      colFechaInicio.classList.remove('hidden');
+      colFechaFin.classList.remove('hidden');
+    } else {
+      colFechaInicio.classList.add('hidden');
+      colFechaFin.classList.add('hidden');
+    }
+  });
+
+  // Iniciar sincronización
+  btnDescargar.addEventListener('click', async function() {
+    const periodo = selPeriodo.value;
+    const fechaInicio = txtFechaInicio.value;
+    const fechaFin = txtFechaFin.value;
+    const tipo = selTipo.value;
+
+    if (periodo === 'custom' && (!fechaInicio || !fechaFin)) {
+      alert('Por favor selecciona la fecha de inicio y fin.');
+      return;
+    }
+
+    btnDescargar.disabled = true;
+    textoBtn.textContent = 'Iniciando...';
+    bannerFinal.classList.add('hidden');
+    panelProgreso.classList.remove('hidden');
+
+    // Reset UI
+    badgePorcentaje.textContent = '0%';
+    barraFill.style.width = '2%';
+    tituloEtapa.textContent = 'Contactando servidor de CONTPAQi...';
+    spinner.classList.remove('hidden');
+
+    try {
+      const resp = await fetch(`/empresas/${empresaId}/cfdi/sincronizar-contpaqi-async`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': csrfToken
+        },
+        body: JSON.stringify({
+          periodo: periodo,
+          fecha_inicio: fechaInicio,
+          fecha_fin: fechaFin,
+          tipo: tipo
+        })
+      });
+
+      const data = await resp.json();
+      if (!data.ok) {
+        throw new Error(data.error || 'Error al iniciar sincronización');
+      }
+
+      iniciarPolling();
+    } catch (err) {
+      alert('Error: ' + err.message);
+      btnDescargar.disabled = false;
+      textoBtn.textContent = 'Sincronizar desde CONTPAQi';
+      panelProgreso.classList.add('hidden');
+    }
+  });
+
+  function iniciarPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(consultarProgreso, 1000);
+    consultarProgreso();
+  }
+
+  async function consultarProgreso() {
+    try {
+      const resp = await fetch(`/empresas/${empresaId}/cfdi/progreso-sync?_t=` + Date.now());
+      if (!resp.ok) return;
+      const data = await resp.json();
+
+      if (data.estado === 'inactivo') return;
+
+      const pct = data.porcentaje || 0;
+      badgePorcentaje.textContent = pct + '%';
+      barraFill.style.width = Math.max(2, pct) + '%';
+      tituloEtapa.textContent = data.etapa || 'Procesando...';
+
+      metTotal.textContent = data.total || 0;
+      metNuevos.textContent = data.nuevos || 0;
+      metOmitidos.textContent = data.omitidos || 0;
+      metConciliados.textContent = data.conciliados || 0;
+
+      if (data.estado === 'completado') {
+        clearInterval(pollInterval);
+        spinner.classList.add('hidden');
+        btnDescargar.disabled = false;
+        textoBtn.textContent = 'Sincronizar desde CONTPAQi';
+
+        bannerFinal.classList.remove('hidden');
+        bannerFinal.className = 'mt-3 p-3 rounded-lg text-xs font-medium flex items-center justify-between bg-emerald-100 text-emerald-800 border border-emerald-300';
+        textoBannerFinal.textContent = data.etapa || '¡Sincronización completada exitosamente!';
+      } else if (data.estado === 'error') {
+        clearInterval(pollInterval);
+        spinner.classList.add('hidden');
+        btnDescargar.disabled = false;
+        textoBtn.textContent = 'Reintentar sincronización';
+
+        bannerFinal.classList.remove('hidden');
+        bannerFinal.className = 'mt-3 p-3 rounded-lg text-xs font-medium flex items-center justify-between bg-red-100 text-red-800 border border-red-300';
+        textoBannerFinal.textContent = 'Error: ' + (data.error || data.etapa || 'Ocurrió un error en la sincronización');
+      }
+    } catch (e) {
+      console.warn('Error al consultar progreso CFDI:', e);
+    }
+  }
+
+  // Si ya había una sincronización corriendo al abrir la página, reanudar polling
+  consultarProgreso();
+});
+</script>
+{% endblock %}

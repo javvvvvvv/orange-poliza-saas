@@ -10,7 +10,8 @@ import uuid
 import tempfile
 import shutil
 import hashlib
-from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for, send_file, send_from_directory
+import threading
+from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for, send_file, send_from_directory, jsonify
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from auth import login_required, empresa_requerida, obtener_empresas_del_usuario
@@ -27,6 +28,7 @@ import usuarios_repo
 import bancos_repo
 import catalogo_repo
 import cfdi_repo
+import contpaqi_cfdi_sync
 import marcado_repo
 import movimientos_repo
 import reglas_generales_repo
@@ -363,4 +365,69 @@ def importar_cfdi_ruta(empresa_id):
     if resultado["pendientes_revision"] > 0:
         return redirect(url_for("configuracion.conciliaciones", empresa_id=empresa_id))
     return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
+
+
+# --- Sincronización automática de CFDIs desde CONTPAQi ADD ---
+
+@importacion_bp.route("/empresas/<int:empresa_id>/cfdi/sincronizar-contpaqi-async", methods=["POST"])
+@login_required
+@empresa_requerida
+def sincronizar_cfdi_contpaqi_async(empresa_id):
+    """
+    Inicia la sincronización de facturas en segundo plano desde el ADD de CONTPAQi.
+    """
+    datos = request.get_json(silent=True) or {}
+    periodo = datos.get("periodo", "mes_actual")
+    fecha_inicio = datos.get("fecha_inicio")
+    fecha_fin = datos.get("fecha_fin")
+    tipo_filtro = datos.get("tipo", "todos")
+
+    # Verificar si ya hay una sincronización en proceso
+    progreso_actual = contpaqi_cfdi_sync.obtener_progreso_sync(empresa_id)
+    if progreso_actual.get("estado") == "procesando":
+        return jsonify({
+            "ok": True,
+            "status": "ya_en_proceso",
+            "mensaje": "Ya existe una sincronización en curso para esta empresa.",
+            "progreso": progreso_actual
+        })
+
+    def _worker():
+        try:
+            contpaqi_cfdi_sync.sincronizar_cfdis_desde_contpaqi(
+                empresa_id=empresa_id,
+                periodo=periodo,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                tipo_filtro=tipo_filtro
+            )
+        except Exception as e:
+            contpaqi_cfdi_sync._guardar_progreso(
+                empresa_id=empresa_id,
+                estado="error",
+                porcentaje=0,
+                etapa="Error inesperado durante la sincronización",
+                error=str(e)
+            )
+
+    hilo = threading.Thread(target=_worker, daemon=True)
+    hilo.start()
+
+    return jsonify({
+        "ok": True,
+        "status": "iniciado",
+        "mensaje": "Sincronización iniciada en segundo plano."
+    })
+
+
+@importacion_bp.route("/empresas/<int:empresa_id>/cfdi/progreso-sync", methods=["GET"])
+@login_required
+@empresa_requerida
+def progreso_sync_cfdi(empresa_id):
+    """
+    Devuelve el estado en tiempo real de la descarga de CFDIs desde CONTPAQi.
+    """
+    progreso = contpaqi_cfdi_sync.obtener_progreso_sync(empresa_id)
+    return jsonify(progreso)
+
 

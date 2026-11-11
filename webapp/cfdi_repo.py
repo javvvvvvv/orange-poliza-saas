@@ -197,7 +197,14 @@ def importar_y_conciliar(empresa_id, rutas_xml, rfc_empresa, ventana_dias=45, ti
                 """INSERT INTO cfdi_movimiento
                    (grupo_id, cfdi_id, movimiento_id, importe_aplicado, tipo_match,
                     confianza, motivo, confirmado)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (cfdi_id, movimiento_id) DO UPDATE SET
+                    grupo_id = EXCLUDED.grupo_id,
+                    importe_aplicado = EXCLUDED.importe_aplicado,
+                    tipo_match = EXCLUDED.tipo_match,
+                    confianza = EXCLUDED.confianza,
+                    motivo = EXCLUDED.motivo,
+                    confirmado = EXCLUDED.confirmado""",
                 (grupo_id, cfdi_id, movimiento_id, aplicacion.importe_aplicado,
                  propuesta.tipo_match, propuesta.confianza, propuesta.motivo,
                  1 if auto_confirmar else 0),

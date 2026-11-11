@@ -9,12 +9,17 @@
       Aquí puedes verificar qué facturas XML (CFDI) están asociadas a cada movimiento bancario.
     </p>
   </div>
-  <form method="post" action="/empresas/{{ eid }}/conciliaciones/reconciliar">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button type="submit" class="px-4 py-2 bg-naranja-500 hover:bg-naranja-600 text-white rounded-lg text-xs font-bold shadow-sm">
-      🔄 Re-asociar Facturas CFDI con Movimientos
-    </button>
-  </form>
+  <div class="flex items-center gap-2">
+    <a href="/empresas/{{ eid }}/importar" class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-xs font-bold shadow-sm flex items-center gap-1.5 transition-colors">
+      <span>📥</span> Descargar CFDIs desde CONTPAQi
+    </a>
+    <form method="post" action="/empresas/{{ eid }}/conciliaciones/reconciliar">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="px-4 py-2 bg-naranja-500 hover:bg-naranja-600 text-white rounded-lg text-xs font-bold shadow-sm transition-colors">
+        🔄 Re-asociar Facturas CFDI con Movimientos
+      </button>
+    </form>
+  </div>
 </div>
 
 <div class="grid grid-cols-3 gap-4 mb-6">
