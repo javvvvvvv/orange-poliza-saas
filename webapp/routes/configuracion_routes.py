@@ -962,11 +962,13 @@ def movimiento_asociar_cfdi(empresa_id, movimiento_id):
         return jsonify({
             "ok": True,
             "es_anticipo": True,
-            "mensaje": f"{len(cfdis)} factura(s) de mes posterior asociadas como ANTICIPO. Se generaron 2 pólizas automáticamente (Anticipo #{res_ant['poliza_anticipo_id']} y Aplicación Diario #{res_ant['poliza_aplicacion_id']}).",
+            "mensaje": f"{len(cfdis)} factura(s) de mes posterior asociadas como ANTICIPO. Se generaron 2 pólizas automáticamente (Anticipo #{res_ant['poliza_anticipo_id']} y Aplicación Diario #{res_ant['poliza_aplicacion_id']}) con subcuenta {res_ant.get('subcuenta_anticipo', '')} ({res_ant.get('desc_subcuenta', '')}).",
             "folios": str_folios,
             "asiento_guardado": True,
             "poliza_anticipo_id": res_ant["poliza_anticipo_id"],
             "poliza_aplicacion_id": res_ant["poliza_aplicacion_id"],
+            "subcuenta_anticipo": res_ant.get("subcuenta_anticipo"),
+            "desc_subcuenta": res_ant.get("desc_subcuenta"),
         })
 
     # Si se especificó una contra-cuenta, actualizar o generar el asiento contable

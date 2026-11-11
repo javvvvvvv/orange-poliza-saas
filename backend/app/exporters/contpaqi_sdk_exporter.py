@@ -45,12 +45,11 @@ def exportar_polizas_via_sdk(movimientos_poliza, nombre_interno_empresa: str) ->
             tipo_int = 2
 
         tiene_cfdi = bool(getattr(mov, "cfdi_uuid", None) or getattr(mov, "facturas", None))
-        if tiene_cfdi:
-            xml_tag = " (OPE sistema)"
-        elif getattr(mov, "tiene_iva", False):
+        tiene_iva = getattr(mov, "tiene_iva", False)
+        if (not tiene_cfdi) and tiene_iva:
             xml_tag = " (ADJUNTAR XML)"
         else:
-            xml_tag = ""
+            xml_tag = " (OPE sistema)"
         import re
         desc_limpia = re.sub(r"\s*\((?:adjuntar\s*xml|ope\s*sistema)\)", "", mov.descripcion or "", flags=re.IGNORECASE).strip()
         concepto_poliza = f"{desc_limpia}{xml_tag}".strip()

@@ -127,12 +127,11 @@ def _nuevo_guid() -> str:
 
 def _fila_p(mov: MovimientoPoliza) -> list:
     tiene_cfdi = bool(getattr(mov, "cfdi_uuid", None) or getattr(mov, "facturas", None))
-    if tiene_cfdi:
-        xml_tag = " (OPE sistema)"
-    elif getattr(mov, "tiene_iva", False):
+    tiene_iva = getattr(mov, "tiene_iva", False)
+    if (not tiene_cfdi) and tiene_iva:
         xml_tag = " (ADJUNTAR XML)"
     else:
-        xml_tag = ""
+        xml_tag = " (OPE sistema)"
     desc_limpia = re.sub(r"\s*\((?:adjuntar\s*xml|ope\s*sistema)\)", "", mov.descripcion or "", flags=re.IGNORECASE).strip()
     tipo_cod = 1 if mov.tipo == "ingreso" else (3 if mov.tipo == "diario" else 2)
     return [

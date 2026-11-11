@@ -1,19 +1,16 @@
 
 def formatear_concepto_poliza(concepto_base: str, tiene_cfdi: bool, tiene_iva: bool) -> str:
     """Aplica las reglas de etiqueta al concepto de la póliza:
-    - Si tiene CFDI -> ' (OPE sistema)'
     - Si no tiene CFDI pero aplica IVA -> ' (ADJUNTAR XML)'
-    - Si no aplica IVA ni tiene CFDI -> sin etiqueta extra.
+    - En cualquier otro caso (tiene CFDI, o no aplica IVA como nómina, etc.) -> ' (OPE sistema)'
     """
     import re
     texto = (concepto_base or "").strip()
     texto = re.sub(r"\s*\((?:adjuntar\s*xml|ope\s*sistema)\)", "", texto, flags=re.IGNORECASE).strip()
-    if tiene_cfdi:
-        tag = " (OPE sistema)"
-    elif tiene_iva:
+    if (not tiene_cfdi) and tiene_iva:
         tag = " (ADJUNTAR XML)"
     else:
-        tag = ""
+        tag = " (OPE sistema)"
     return (texto + tag).strip()
 
 # ============================================================================
@@ -535,6 +532,132 @@ def limpiar_movimientos(empresa_id, forzar=False, usuario_id=None):
     return respaldar_y_limpiar_movimientos(empresa_id, usuario_id=usuario_id)
 
 
+def normalizar_texto_subcuenta(texto: str) -> str:
+    """Normaliza texto para comparación de nombres de clientes/proveedores."""
+    if not texto:
+        return ""
+    import unicodedata, re
+    t = texto.upper()
+    t = "".join(c for c in unicodedata.normalize("NFD", t) if unicodedata.category(c) != "Mn")
+    t = re.sub(r"[^A-Z0-9\s]", " ", t)
+    sufijos = [
+        r"\bS\s*A\s*D\s*E\s*C\s*V\b",
+        r"\bS\s*A\s*P\s*I\s*D\s*E\s*C\s*V\b",
+        r"\bS\s*D\s*E\s*R\s*L\s*D\s*E\s*C\s*V\b",
+        r"\bS\s*D\s*E\s*R\s*L\b",
+        r"\bS\s*A\s*B\s*D\s*E\s*C\s*V\b",
+        r"\bS\s*A\b",
+        r"\bS\s*C\b",
+        r"\bS\s*A\s*S\b",
+        r"\bS\s*N\s*C\b",
+    ]
+    for s in sufijos:
+        t = re.sub(s, " ", t)
+    return " ".join(t.split())
+
+
+def obtener_o_crear_subcuenta_anticipo(
+    cur,
+    empresa_id: int,
+    cuenta_base: str,
+    persona_nombre: str,
+    rfc: str = None,
+    tipo: str = "ingreso"
+) -> tuple[str, str]:
+    """
+    Busca si ya existe una subcuenta para el cliente o proveedor bajo la cuenta de anticipo base.
+    Si no existe, crea una nueva subcuenta consecutiva en cuentas_catalogo con el nombre del cliente o proveedor.
+
+    Retorna: (cuenta_subcuenta, descripcion_subcuenta)
+    """
+    import re
+    from movimientos_comun import _sin_guiones
+
+    cta_base = (cuenta_base or "").split(" - ")[0].strip()
+    if not cta_base:
+        cta_base = "206-01-000" if tipo == "ingreso" else "120-01-000"
+
+    padre_row = cur.execute(
+        """SELECT * FROM cuentas_catalogo
+           WHERE empresa_id = ? AND (cuenta = ? OR REPLACE(cuenta, '-', '') = REPLACE(?, '-', ''))
+           ORDER BY id ASC LIMIT 1""",
+        (empresa_id, cta_base, cta_base)
+    ).fetchone()
+
+    cuenta_padre_fmt = padre_row["cuenta"] if padre_row else cta_base
+
+    if "-" in cuenta_padre_fmt:
+        partes = cuenta_padre_fmt.split("-")
+        prefix = "-".join(partes[:-1]) + "-"
+        suffix_len = max(len(partes[-1]), 3)
+    else:
+        m = re.search(r"(0+)$", cuenta_padre_fmt)
+        if m and len(m.group(1)) >= 2:
+            suffix_len = len(m.group(1))
+            prefix = cuenta_padre_fmt[:-suffix_len]
+        else:
+            suffix_len = 3
+            prefix = cuenta_padre_fmt[:-3] if len(cuenta_padre_fmt) > 3 else cuenta_padre_fmt
+
+    filas = cur.execute(
+        """SELECT * FROM cuentas_catalogo
+           WHERE empresa_id = ? AND (cuenta LIKE ? OR REPLACE(cuenta, '-', '') LIKE ?)
+           ORDER BY cuenta ASC""",
+        (empresa_id, f"{prefix}%", f"{_sin_guiones(prefix)}%")
+    ).fetchall()
+
+    nombre_norm = normalizar_texto_subcuenta(persona_nombre)
+    rfc_limpio = (rfc or "").strip().upper()
+
+    numeros_usados = []
+
+    for f in filas:
+        cta_f = str(f["cuenta"]).strip()
+        desc_f = str(f["descripcion"] or "").strip()
+
+        sufijo_raw = cta_f[len(prefix):] if cta_f.startswith(prefix) else cta_f.split("-")[-1]
+        sufijo_digitos = re.sub(r"\D", "", sufijo_raw)
+        if sufijo_digitos:
+            num = int(sufijo_digitos)
+            if num > 0:
+                numeros_usados.append(num)
+
+        if sufijo_digitos and int(sufijo_digitos) == 0:
+            continue
+
+        if rfc_limpio and len(rfc_limpio) >= 9 and rfc_limpio in desc_f.upper():
+            return cta_f, desc_f
+
+        desc_norm = normalizar_texto_subcuenta(desc_f)
+        if nombre_norm and desc_norm:
+            if nombre_norm == desc_norm or nombre_norm in desc_norm or desc_norm in nombre_norm:
+                return cta_f, desc_f
+            tokens_p = set(t for t in nombre_norm.split() if len(t) >= 3)
+            tokens_d = set(t for t in desc_norm.split() if len(t) >= 3)
+            if tokens_p and tokens_d:
+                inter = tokens_p.intersection(tokens_d)
+                if len(inter) / min(len(tokens_p), len(tokens_d)) >= 0.75:
+                    return cta_f, desc_f
+
+    sig_num = (max(numeros_usados) + 1) if numeros_usados else 1
+    sufijo_str = str(sig_num).zfill(suffix_len)
+    nueva_cuenta = f"{prefix}{sufijo_str}"
+    nueva_desc = (persona_nombre or "").strip().upper() or f"Subcuenta Anticipo {sufijo_str}"
+
+    naturaleza_cuenta = (padre_row["naturaleza"] if padre_row and padre_row["naturaleza"] 
+                         else ("acreedora" if tipo == "ingreso" else "deudora"))
+    nivel_cuenta = (padre_row["nivel"] + 1) if (padre_row and padre_row["nivel"] is not None) else 3
+
+    cur.execute(
+        """INSERT INTO cuentas_catalogo (
+               empresa_id, cuenta, descripcion, cuenta_padre, nivel, naturaleza, afectable
+           ) VALUES (?, ?, ?, ?, ?, ?, 1)""",
+        (empresa_id, nueva_cuenta, nueva_desc, cuenta_padre_fmt, nivel_cuenta, naturaleza_cuenta)
+    )
+
+    return nueva_cuenta, nueva_desc
+
+
 def crear_polizas_anticipo(empresa_id: int, movimiento_id: int, cfdi_ids: list, cuenta_anticipo: str, cuenta_contraparte: str = None):
     """
     Genera dos pólizas simultáneas para un movimiento con factura(s) de mes posterior:
@@ -623,6 +746,18 @@ def crear_polizas_anticipo(empresa_id: int, movimiento_id: int, cfdi_ids: list, 
         elif tipo_mov == "egreso" and not empresa.get("cuenta_anticipo_proveedores"):
             cur.execute("UPDATE empresas SET cuenta_anticipo_proveedores = ? WHERE id = ?", (cta_anticipo_display, empresa_id))
 
+        # Obtener o crear subcuenta individual para el cliente o proveedor
+        rfc_asociado = cfdi_principal["rfc_receptor" if tipo_mov == "ingreso" else "rfc_emisor"]
+        subcuenta_anticipo, desc_subcuenta = obtener_o_crear_subcuenta_anticipo(
+            cur,
+            empresa_id=empresa_id,
+            cuenta_base=cta_anticipo_display,
+            persona_nombre=persona_nombre,
+            rfc=rfc_asociado,
+            tipo=tipo_mov
+        )
+        cta_anticipo_sub = _sin_guiones(subcuenta_anticipo)
+
         # 1. PÓLIZA DE ANTICIPO
         poliza_1_id = mov["poliza_id"]
         sig_num_1 = cur.execute(
@@ -656,11 +791,11 @@ def crear_polizas_anticipo(empresa_id: int, movimiento_id: int, cfdi_ids: list, 
         lineas_p1 = []
         if tipo_mov == "ingreso":
             lineas_p1.append((cuenta_banco, "cargo", total_mov, "Depósito bancario anticipo cliente"))
-            lineas_p1.append((cta_anticipo_clean, "abono", base, "Anticipo de clientes"))
+            lineas_p1.append((cta_anticipo_sub, "abono", base, f"Anticipo de clientes - {desc_subcuenta}"))
             if iva > 0:
                 lineas_p1.append((cuenta_iva_trasladado, "abono", iva, "IVA trasladado cobrado anticipo"))
         else:
-            lineas_p1.append((cta_anticipo_clean, "cargo", total_mov, "Anticipo a proveedores"))
+            lineas_p1.append((cta_anticipo_sub, "cargo", total_mov, f"Anticipo a proveedores - {desc_subcuenta}"))
             lineas_p1.append((cuenta_banco, "abono", total_mov, "Pago bancario anticipo proveedor"))
 
         for orden, (cta, nat, imp, dsc) in enumerate(lineas_p1):
@@ -702,7 +837,7 @@ def crear_polizas_anticipo(empresa_id: int, movimiento_id: int, cfdi_ids: list, 
 
         lineas_p2 = []
         if tipo_mov == "ingreso":
-            lineas_p2.append((cta_anticipo_clean, "cargo", base, "Amortización anticipo clientes"))
+            lineas_p2.append((cta_anticipo_sub, "cargo", base, f"Amortización anticipo clientes - {desc_subcuenta}"))
             if iva > 0:
                 lineas_p2.append((cuenta_iva_trasladado, "cargo", iva, "Cancelación IVA trasladado anticipo"))
                 lineas_p2.append((cuenta_iva_por_trasladar, "cargo", iva, "IVA por trasladar devengado"))
@@ -713,7 +848,7 @@ def crear_polizas_anticipo(empresa_id: int, movimiento_id: int, cfdi_ids: list, 
             if iva > 0:
                 lineas_p2.append((cuenta_iva_acreditable, "cargo", iva, "IVA acreditable pagado aplicación"))
                 lineas_p2.append((cuenta_iva_por_acreditar, "abono", iva, "Cancelación IVA por acreditar"))
-            lineas_p2.append((cta_anticipo_clean, "abono", total_mov, "Amortización anticipo proveedores"))
+            lineas_p2.append((cta_anticipo_sub, "abono", total_mov, f"Amortización anticipo proveedores - {desc_subcuenta}"))
 
         for orden, (cta, nat, imp, dsc) in enumerate(lineas_p2):
             cur.execute(
@@ -734,6 +869,8 @@ def crear_polizas_anticipo(empresa_id: int, movimiento_id: int, cfdi_ids: list, 
             "ok": True,
             "poliza_anticipo_id": poliza_1_id,
             "poliza_aplicacion_id": poliza_2_id,
+            "subcuenta_anticipo": subcuenta_anticipo,
+            "desc_subcuenta": desc_subcuenta,
             "fecha_anticipo": fecha_mov,
             "fecha_aplicacion": fecha_aplicacion,
             "tipo": tipo_mov

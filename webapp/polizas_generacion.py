@@ -37,7 +37,10 @@ def _concepto_y_referencia(fila, cfdis):
     referencia = fila["numero_factura"] or ""
     concepto = fila["descripcion"]
     if not cfdis:
-        return concepto, referencia
+        tiene_cfdi = False
+        tiene_iva = fila.get("afectable_impuestos") is None or bool(fila.get("afectable_impuestos"))
+        from polizas_edicion import formatear_concepto_poliza
+        return formatear_concepto_poliza(concepto, tiene_cfdi, tiene_iva), referencia
 
     if len(cfdis) > 1:
         folios = [(c["folio"] or "").strip() or "U" + c["uuid"][-4:] for c in cfdis]
