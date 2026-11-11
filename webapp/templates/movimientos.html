@@ -193,13 +193,13 @@
               <span class="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded font-mono font-bold text-[11px]" title="CFDIs vinculados">
                 {{ m.facturas_cfdi }}
               </span>
-              <button onclick="abrirModalAsociar({{ m.id }}, '{{ m.tipo }}', '{{ m.rfc_contraparte or '' }}', {{ m.total }}, '{{ m.descripcion|escape }}')"
+              <button onclick="abrirModalAsociar({{ m.id }}, '{{ m.tipo }}', '{{ m.rfc_contraparte or '' }}', {{ m.total }}, '{{ m.descripcion|escape }}', '{{ m.fecha }}')"
                       class="text-[10px] text-emerald-700 hover:text-emerald-900 underline font-semibold" title="Editar o agregar facturas XML">
                 Modificar
               </button>
             </div>
             {% else %}
-            <button onclick="abrirModalAsociar({{ m.id }}, '{{ m.tipo }}', '{{ m.rfc_contraparte or '' }}', {{ m.total }}, '{{ m.descripcion|escape }}')"
+            <button onclick="abrirModalAsociar({{ m.id }}, '{{ m.tipo }}', '{{ m.rfc_contraparte or '' }}', {{ m.total }}, '{{ m.descripcion|escape }}', '{{ m.fecha }}')"
                     class="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded font-semibold text-[11px] flex items-center gap-1 transition-colors">
               <span>🔍</span> Asociar XML
             </button>
@@ -246,7 +246,18 @@
                 <span class="text-rose-600 font-bold ml-1">⚠ Descuadrada</span>
                 {% endif %}
               </span>
+              {% if m.es_anticipo %}
+              <span class="text-[9px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.5 rounded border border-amber-300">
+                ANTICIPO
+              </span>
+              {% endif %}
             </div>
+            {% if m.poliza_aplicacion_numero %}
+            <div class="mt-1 text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5 py-0.5 flex items-center justify-between">
+              <span class="font-bold">📘 Diario Aplicación #{{ m.poliza_aplicacion_numero }}</span>
+              <span class="text-[9px] text-indigo-500">1er día mes factura</span>
+            </div>
+            {% endif %}
             {% else %}
             <div class="text-[11px] text-slate-400 italic bg-slate-50 p-2 rounded border border-dashed border-slate-200">
               Sin asiento contable generado todavía.
@@ -263,7 +274,7 @@
               </button>
             </div>
             <div class="flex items-center justify-end gap-1">
-              <button onclick="abrirModalAsociar({{ m.id }}, '{{ m.tipo }}', '{{ m.rfc_contraparte or '' }}', {{ m.total }}, '{{ m.descripcion|escape }}')"
+              <button onclick="abrirModalAsociar({{ m.id }}, '{{ m.tipo }}', '{{ m.rfc_contraparte or '' }}', {{ m.total }}, '{{ m.descripcion|escape }}', '{{ m.fecha }}')"
                       class="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-semibold text-[10px]" title="Vincular XML">
                 XML
               </button>
@@ -444,6 +455,27 @@
       <p class="text-[10px] text-amber-800 mt-1">
         Al seleccionar una factura, el sistema buscará la cuenta en el catálogo. Si aún no decides la cuenta, déjala vacía y el movimiento permanecerá en revisión para que lo captures después sin cerrarse en falso.
       </p>
+    </div>
+
+    <!-- SECCIÓN DE ANTICIPO (SE ACTIVA AUTOMÁTICAMENTE SI EL CFDI ES DE MES POSTERIOR) -->
+    <div id="asoc-anticipo-box" class="p-4 bg-orange-50 border-b border-orange-200 hidden">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-sm">⚠️</span>
+        <label class="block text-xs font-bold text-orange-950" id="asoc-anticipo-titulo">
+          Factura de mes posterior detectada (Anticipo):
+        </label>
+      </div>
+      <p class="text-[11px] text-orange-800 mb-2 leading-tight" id="asoc-anticipo-explicacion">
+        El movimiento bancario es de una fecha anterior a la factura. El sistema registrará el pago como anticipo y generará automáticamente la póliza de diario de aplicación al primer día del mes de la factura.
+      </p>
+      <div>
+        <label class="block text-[11px] font-semibold text-orange-900 mb-1" id="asoc-anticipo-label">
+          Cuenta de Anticipo:
+        </label>
+        <input type="text" id="asoc-cuenta-anticipo" list="cuentas-catalogo"
+               placeholder="Cuenta contable de anticipo (ej. 206-01-000 / 107-01-000)..."
+               class="w-full border border-orange-300 rounded-lg px-3 py-2 text-xs font-mono bg-white focus:ring-2 focus:ring-orange-500 focus:outline-none">
+      </div>
     </div>
 
     <div class="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-3">
@@ -843,11 +875,51 @@ async function guardarAsientoContable() {
 // --------------------------------------------------------------------------
 // LÓGICA DE ASOCIACIÓN DE FACTURAS XML Y ASIGNACIÓN DE CONTRA-CUENTA
 // --------------------------------------------------------------------------
-function abrirModalAsociar(id, tipo, rfc, total, desc) {
+let movActualFecha = '';
+let movActualTipo = '';
+const ctaAnticipoClienteDef = "{{ (empresa.cuenta_anticipo_clientes if empresa else '') or '' }}";
+const ctaAnticipoProvDef = "{{ (empresa.cuenta_anticipo_proveedores if empresa else '') or '' }}";
+
+function verificarSiEsAnticipo() {
+    const chks = Array.from(document.querySelectorAll('.cfdi-checkbox:checked')).map(c => parseInt(c.value));
+    const box = document.getElementById('asoc-anticipo-box');
+    const inputAnticipo = document.getElementById('asoc-cuenta-anticipo');
+    
+    let esAnticipo = false;
+    let fechaCfdi = '';
+    for (const cid of chks) {
+        const item = cfdisCargados.find(x => x.id === cid);
+        if (item && item.fecha && movActualFecha && item.fecha.substring(0, 7) > movActualFecha.substring(0, 7)) {
+            esAnticipo = true;
+            fechaCfdi = item.fecha;
+            break;
+        }
+    }
+
+    if (esAnticipo) {
+        box.classList.remove('hidden');
+        const tipoDesc = movActualTipo === 'ingreso' ? 'Clientes' : 'Proveedores';
+        document.getElementById('asoc-anticipo-titulo').innerText = `⚠️ Factura de mes posterior detectada (Anticipo de ${tipoDesc})`;
+        document.getElementById('asoc-anticipo-explicacion').innerText = `El movimiento bancario es de ${movActualFecha} y la factura es de ${fechaCfdi}. El sistema registrará el pago como Anticipo de ${tipoDesc} y creará automáticamente la Póliza de Diario de aplicación al 1er día del mes de la factura (${fechaCfdi.substring(0, 7)}-01).`;
+        document.getElementById('asoc-anticipo-label').innerText = `Cuenta de Anticipo de ${tipoDesc}:`;
+        if (!inputAnticipo.value) {
+            inputAnticipo.value = movActualTipo === 'ingreso' ? ctaAnticipoClienteDef : ctaAnticipoProvDef;
+        }
+    } else {
+        box.classList.add('hidden');
+    }
+    return esAnticipo;
+}
+
+function abrirModalAsociar(id, tipo, rfc, total, desc, fecha) {
     movActualId = id;
-    document.getElementById('asoc-mov-info').innerText = `Movimiento #${id} (${tipo.toUpperCase()} $${total.toFixed(2)}) · ${rfc ? 'RFC: ' + rfc : 'Sin RFC'} · ${desc}`;
+    movActualTipo = tipo;
+    movActualFecha = fecha || '';
+    document.getElementById('asoc-mov-info').innerText = `Movimiento #${id} (${tipo.toUpperCase()} $${total.toFixed(2)}) · ${fecha || ''} · ${rfc ? 'RFC: ' + rfc : 'Sin RFC'} · ${desc}`;
     document.getElementById('asoc-buscar').value = rfc || '';
     document.getElementById('asoc-contra-cuenta').value = '';
+    document.getElementById('asoc-cuenta-anticipo').value = (tipo === 'ingreso' ? ctaAnticipoClienteDef : ctaAnticipoProvDef);
+    document.getElementById('asoc-anticipo-box').classList.add('hidden');
     document.getElementById('asoc-cuenta-sugerida-badge').classList.add('hidden');
     
     const m = document.getElementById('modal-asociar-cfdi');
@@ -951,6 +1023,7 @@ async function cargarCfdisParaAsociar() {
 
 function onCfdiCheckboxChanged(chk) {
     actualizarContadorSeleccion();
+    verificarSiEsAnticipo();
     if (chk.checked) {
         const rfc = chk.getAttribute('data-rfc') || '';
         const nom = chk.getAttribute('data-nombre') || '';
@@ -972,6 +1045,14 @@ async function confirmarAsociacion() {
     }
 
     const contraCuenta = document.getElementById('asoc-contra-cuenta').value.trim();
+    const cuentaAnticipo = document.getElementById('asoc-cuenta-anticipo').value.trim();
+    const esAnt = verificarSiEsAnticipo();
+
+    if (esAnt && !cuentaAnticipo) {
+        alert("Esta factura es de un mes posterior (Anticipo). Por favor captura o confirma la cuenta de anticipo.");
+        document.getElementById('asoc-cuenta-anticipo').focus();
+        return;
+    }
 
     try {
         const resp = await fetch(`/empresas/${empresaId}/movimientos/${movActualId}/asociar-cfdi`, {
@@ -979,7 +1060,8 @@ async function confirmarAsociacion() {
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
             body: JSON.stringify({
                 cfdi_ids: chks,
-                cuenta_contraparte: contraCuenta
+                cuenta_contraparte: contraCuenta,
+                cuenta_anticipo: cuentaAnticipo
             })
         });
         const res = await resp.json();

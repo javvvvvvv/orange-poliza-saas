@@ -1,3 +1,21 @@
+
+def formatear_concepto_poliza(concepto_base: str, tiene_cfdi: bool, tiene_iva: bool) -> str:
+    """Aplica las reglas de etiqueta al concepto de la póliza:
+    - Si tiene CFDI -> ' (OPE sistema)'
+    - Si no tiene CFDI pero aplica IVA -> ' (ADJUNTAR XML)'
+    - Si no aplica IVA ni tiene CFDI -> sin etiqueta extra.
+    """
+    import re
+    texto = (concepto_base or "").strip()
+    texto = re.sub(r"\s*\((?:adjuntar\s*xml|ope\s*sistema)\)", "", texto, flags=re.IGNORECASE).strip()
+    if tiene_cfdi:
+        tag = " (OPE sistema)"
+    elif tiene_iva:
+        tag = " (ADJUNTAR XML)"
+    else:
+        tag = ""
+    return (texto + tag).strip()
+
 # ============================================================================
 # PROPIEDAD INTELECTUAL Y LICENCIA COMERCIAL CERRADA
 # ============================================================================
@@ -260,7 +278,13 @@ def guardar_asiento_movimiento(empresa_id, movimiento_id, lineas, concepto=None)
 
         poliza_id = mov["poliza_id"]
         tipo_poliza = "egreso" if mov["tipo"] == "egreso" else "ingreso"
-        concepto_final = (concepto or mov["descripcion"] or f"Póliza {tipo_poliza} {mov['fecha']}").strip()
+        tiene_cfdi = cur.execute(
+            "SELECT 1 FROM cfdi_movimiento WHERE movimiento_id = ? AND confirmado = 1 LIMIT 1",
+            (movimiento_id,)
+        ).fetchone() is not None
+        tiene_iva = mov["afectable_impuestos"] is None or bool(mov["afectable_impuestos"])
+        concepto_base = (concepto or mov["descripcion"] or f"Póliza {tipo_poliza} {mov['fecha']}").strip()
+        concepto_final = formatear_concepto_poliza(concepto_base, tiene_cfdi, tiene_iva)
         fecha_poliza = str(mov["fecha"])
 
         if poliza_id:
@@ -509,3 +533,208 @@ def limpiar_movimientos(empresa_id, forzar=False, usuario_id=None):
     permitiendo hacer una carga nueva sin bloquear al usuario ni perder datos.
     """
     return respaldar_y_limpiar_movimientos(empresa_id, usuario_id=usuario_id)
+
+
+def crear_polizas_anticipo(empresa_id: int, movimiento_id: int, cfdi_ids: list, cuenta_anticipo: str, cuenta_contraparte: str = None):
+    """
+    Genera dos pólizas simultáneas para un movimiento con factura(s) de mes posterior:
+    1) Póliza de Anticipo (Ingreso o Egreso) con fecha del movimiento bancario.
+    2) Póliza de Aplicación (Diario) con fecha del primer día del mes de la factura.
+    """
+    from movimientos_comun import _SQL_MOVIMIENTOS_CON_BANCO, _sin_guiones
+
+    if not cfdi_ids:
+        raise ValueError("Se requiere al menos un CFDI para generar el anticipo.")
+    if not cuenta_anticipo or not cuenta_anticipo.strip():
+        raise ValueError("Debes especificar la cuenta contable de anticipo.")
+
+    cta_anticipo_clean = cuenta_anticipo.split(" - ")[0].split()[0].replace("-", "").replace(".", "").strip()
+    cta_anticipo_display = cuenta_anticipo.split(" - ")[0].strip()
+
+    with get_connection() as con:
+        cur = con.cursor()
+        mov = cur.execute(
+            _SQL_MOVIMIENTOS_CON_BANCO + " WHERE m.id = ? AND m.empresa_id = ?",
+            (movimiento_id, empresa_id)
+        ).fetchone()
+        if not mov:
+            raise ValueError(f"Movimiento {movimiento_id} no encontrado.")
+
+        empresa = cur.execute("SELECT * FROM empresas WHERE id = ?", (empresa_id,)).fetchone()
+        if not empresa:
+            raise ValueError("Empresa no encontrada.")
+
+        placeholders = ",".join(["?"] * len(cfdi_ids))
+        cfdis = cur.execute(
+            f"SELECT * FROM cfdis WHERE id IN ({placeholders}) AND empresa_id = ? ORDER BY fecha ASC",
+            tuple(cfdi_ids + [empresa_id])
+        ).fetchall()
+        if not cfdis:
+            raise ValueError("Facturas CFDI no encontradas.")
+
+        tipo_mov = mov["tipo"]  # 'ingreso' | 'egreso'
+        total_mov = float(mov["total"] or 0.0)
+        fecha_mov = str(mov["fecha"])
+
+        cfdi_principal = cfdis[0]
+        fecha_cfdi = str(cfdi_principal["fecha"])
+        mes_cfdi = fecha_cfdi[:7]
+        fecha_aplicacion = f"{mes_cfdi}-01"
+
+        folios = ", ".join(f"{c['serie'] or ''}{c['folio'] or ''}".strip() for c in cfdis if f"{c['serie'] or ''}{c['folio'] or ''}".strip())
+        persona_nombre = (cfdi_principal["nombre_receptor" if tipo_mov == "ingreso" else "nombre_emisor"] or 
+                          cfdi_principal["rfc_receptor" if tipo_mov == "ingreso" else "rfc_emisor"] or "").strip()
+
+        cuenta_banco = _sin_guiones(mov["cuenta_banco"])
+        if not cuenta_banco:
+            b_cta = cur.execute("SELECT cuenta_contable FROM bancos WHERE empresa_id = ? LIMIT 1", (empresa_id,)).fetchone()
+            cuenta_banco = _sin_guiones(b_cta["cuenta_contable"]) if b_cta else "10201001"
+
+        tasa_iva = float(empresa["tasa_iva"] or 0.16)
+        cuenta_iva_trasladado = _sin_guiones(empresa.get("cuenta_iva_trasladado") or "20801001")
+        cuenta_iva_por_trasladar = _sin_guiones(empresa.get("cuenta_iva_por_trasladar") or "20901001")
+        cuenta_iva_acreditable = _sin_guiones(empresa.get("cuenta_iva_acreditable") or "11801001")
+        cuenta_iva_por_acreditar = _sin_guiones(empresa.get("cuenta_iva_por_acreditar") or "11901001")
+
+        cuenta_contra = ""
+        if cuenta_contraparte:
+            cuenta_contra = cuenta_contraparte.split(" - ")[0].split()[0].replace("-", "").replace(".", "").strip()
+        if not cuenta_contra:
+            rfc_buscar = cfdi_principal["rfc_receptor" if tipo_mov == "ingreso" else "rfc_emisor"]
+            c_cat = cur.execute(
+                "SELECT cuenta FROM cuentas_catalogo WHERE empresa_id = ? AND (cuenta ILIKE ? OR descripcion ILIKE ?) LIMIT 1",
+                (empresa_id, f"%{rfc_buscar}%", f"%{persona_nombre[:10]}%")
+            ).fetchone()
+            if c_cat:
+                cuenta_contra = _sin_guiones(c_cat["cuenta"])
+            else:
+                cuenta_contra = "10501001" if tipo_mov == "ingreso" else "20101001"
+
+        aplica_iva = mov["afectable_impuestos"] is None or bool(mov["afectable_impuestos"])
+        if aplica_iva and tasa_iva > 0:
+            base = round(total_mov / (1.0 + tasa_iva), 2)
+            iva = round(total_mov - base, 2)
+        else:
+            base = total_mov
+            iva = 0.0
+
+        if tipo_mov == "ingreso" and not empresa.get("cuenta_anticipo_clientes"):
+            cur.execute("UPDATE empresas SET cuenta_anticipo_clientes = ? WHERE id = ?", (cta_anticipo_display, empresa_id))
+        elif tipo_mov == "egreso" and not empresa.get("cuenta_anticipo_proveedores"):
+            cur.execute("UPDATE empresas SET cuenta_anticipo_proveedores = ? WHERE id = ?", (cta_anticipo_display, empresa_id))
+
+        # 1. PÓLIZA DE ANTICIPO
+        poliza_1_id = mov["poliza_id"]
+        sig_num_1 = cur.execute(
+            "SELECT COALESCE(MAX(numero), 0) + 1 FROM polizas WHERE empresa_id = ? AND tipo = ?",
+            (empresa_id, tipo_mov)
+        ).fetchone()[0]
+
+        concepto_1 = formatear_concepto_poliza(
+            f"Anticipo {'Cliente' if tipo_mov == 'ingreso' else 'Proveedor'} {persona_nombre or mov['descripcion']}",
+            tiene_cfdi=True, tiene_iva=bool(iva > 0)
+        )
+        afectar_fiscal_1 = 1 if tipo_mov == "ingreso" else 0
+
+        if poliza_1_id:
+            cur.execute(
+                """UPDATE polizas SET fecha = ?, concepto = ?, cuadrada = 1, enviada_contpaqi = 0,
+                                      es_anticipo = 1, es_aplicacion_anticipo = 0, afectar_iva_fiscal = ?
+                   WHERE id = ? AND empresa_id = ?""",
+                (fecha_mov, concepto_1, afectar_fiscal_1, poliza_1_id, empresa_id)
+            )
+            cur.execute("DELETE FROM poliza_lineas WHERE poliza_id = ?", (poliza_1_id,))
+        else:
+            cur.execute(
+                """INSERT INTO polizas (empresa_id, tipo, numero, fecha, concepto, cuadrada, enviada_contpaqi,
+                                       es_anticipo, es_aplicacion_anticipo, afectar_iva_fiscal)
+                   VALUES (?, ?, ?, ?, ?, 1, 0, 1, 0, ?)""",
+                (empresa_id, tipo_mov, sig_num_1, fecha_mov, concepto_1, afectar_fiscal_1)
+            )
+            poliza_1_id = cur.lastrowid
+
+        lineas_p1 = []
+        if tipo_mov == "ingreso":
+            lineas_p1.append((cuenta_banco, "cargo", total_mov, "Depósito bancario anticipo cliente"))
+            lineas_p1.append((cta_anticipo_clean, "abono", base, "Anticipo de clientes"))
+            if iva > 0:
+                lineas_p1.append((cuenta_iva_trasladado, "abono", iva, "IVA trasladado cobrado anticipo"))
+        else:
+            lineas_p1.append((cta_anticipo_clean, "cargo", total_mov, "Anticipo a proveedores"))
+            lineas_p1.append((cuenta_banco, "abono", total_mov, "Pago bancario anticipo proveedor"))
+
+        for orden, (cta, nat, imp, dsc) in enumerate(lineas_p1):
+            cur.execute(
+                """INSERT INTO poliza_lineas (poliza_id, orden, cuenta, naturaleza, importe, descripcion, formula_usada)
+                   VALUES (?, ?, ?, ?, ?, ?, 'ANTICIPO')""",
+                (poliza_1_id, orden, cta, nat, imp, dsc)
+            )
+
+        # 2. PÓLIZA DE APLICACIÓN DE ANTICIPO
+        poliza_2_id = mov["poliza_aplicacion_id"] if "poliza_aplicacion_id" in mov.keys() else None
+        sig_num_2 = cur.execute(
+            "SELECT COALESCE(MAX(numero), 0) + 1 FROM polizas WHERE empresa_id = ? AND tipo = 'diario'",
+            (empresa_id,)
+        ).fetchone()[0]
+
+        concepto_2 = formatear_concepto_poliza(
+            f"Aplicación Anticipo Fac {folios or 'CFDI'} {persona_nombre}",
+            tiene_cfdi=True, tiene_iva=bool(iva > 0)
+        )
+        afectar_fiscal_2 = 0 if tipo_mov == "ingreso" else 1
+
+        if poliza_2_id:
+            cur.execute(
+                """UPDATE polizas SET fecha = ?, concepto = ?, cuadrada = 1, enviada_contpaqi = 0,
+                                      es_anticipo = 0, es_aplicacion_anticipo = 1, poliza_origen_id = ?, afectar_iva_fiscal = ?
+                   WHERE id = ? AND empresa_id = ?""",
+                (fecha_aplicacion, concepto_2, poliza_1_id, afectar_fiscal_2, poliza_2_id, empresa_id)
+            )
+            cur.execute("DELETE FROM poliza_lineas WHERE poliza_id = ?", (poliza_2_id,))
+        else:
+            cur.execute(
+                """INSERT INTO polizas (empresa_id, tipo, numero, fecha, concepto, cuadrada, enviada_contpaqi,
+                                       es_anticipo, es_aplicacion_anticipo, poliza_origen_id, afectar_iva_fiscal)
+                   VALUES (?, 'diario', ?, ?, ?, 1, 0, 0, 1, ?, ?)""",
+                (empresa_id, sig_num_2, fecha_aplicacion, concepto_2, poliza_1_id, afectar_fiscal_2)
+            )
+            poliza_2_id = cur.lastrowid
+
+        lineas_p2 = []
+        if tipo_mov == "ingreso":
+            lineas_p2.append((cta_anticipo_clean, "cargo", base, "Amortización anticipo clientes"))
+            if iva > 0:
+                lineas_p2.append((cuenta_iva_trasladado, "cargo", iva, "Cancelación IVA trasladado anticipo"))
+                lineas_p2.append((cuenta_iva_por_trasladar, "cargo", iva, "IVA por trasladar devengado"))
+                lineas_p2.append((cuenta_iva_trasladado, "abono", iva, "IVA trasladado definitivo"))
+            lineas_p2.append((cuenta_contra, "abono", total_mov, "Aplicación factura cliente"))
+        else:
+            lineas_p2.append((cuenta_contra, "cargo", total_mov, "Aplicación factura proveedor"))
+            if iva > 0:
+                lineas_p2.append((cuenta_iva_acreditable, "cargo", iva, "IVA acreditable pagado aplicación"))
+                lineas_p2.append((cuenta_iva_por_acreditar, "abono", iva, "Cancelación IVA por acreditar"))
+            lineas_p2.append((cta_anticipo_clean, "abono", total_mov, "Amortización anticipo proveedores"))
+
+        for orden, (cta, nat, imp, dsc) in enumerate(lineas_p2):
+            cur.execute(
+                """INSERT INTO poliza_lineas (poliza_id, orden, cuenta, naturaleza, importe, descripcion, formula_usada)
+                   VALUES (?, ?, ?, ?, ?, ?, 'APLICACION_ANTICIPO')""",
+                (poliza_2_id, orden, cta, nat, imp, dsc)
+            )
+
+        cur.execute(
+            """UPDATE movimientos
+               SET poliza_id = ?, poliza_aplicacion_id = ?, es_anticipo = 1, estado_clasificacion = 'manual'
+               WHERE id = ? AND empresa_id = ?""",
+            (poliza_1_id, poliza_2_id, movimiento_id, empresa_id)
+        )
+        con.commit()
+
+        return {
+            "ok": True,
+            "poliza_anticipo_id": poliza_1_id,
+            "poliza_aplicacion_id": poliza_2_id,
+            "fecha_anticipo": fecha_mov,
+            "fecha_aplicacion": fecha_aplicacion,
+            "tipo": tipo_mov
+        }

@@ -43,9 +43,14 @@
       <table class="w-full text-xs text-slate-600">
         {% for linea in r.plantilla %}
         <tr>
-          <td class="py-1 pr-3 uppercase {{ 'text-emerald-600' if linea.naturaleza == 'cargo' else 'text-rose-600' }}">{{ linea.naturaleza }}</td>
-          <td class="py-1 pr-3 font-mono">{{ linea.cuenta }}</td>
-          <td class="py-1 pr-3 font-mono">{{ linea.formula }}</td>
+          <td class="py-1 pr-3 uppercase font-semibold {{ 'text-emerald-600' if linea.naturaleza == 'cargo' else 'text-rose-600' }}">{{ linea.naturaleza }}</td>
+          <td class="py-1 pr-3 font-mono font-medium text-slate-800">
+            {{ linea.cuenta }}
+            {% if linea.nombre_cuenta %}
+            <span class="font-sans font-normal text-slate-600 ml-1.5">({{ linea.nombre_cuenta }})</span>
+            {% endif %}
+          </td>
+          <td class="py-1 pr-3 font-mono text-slate-500">{{ linea.formula }}</td>
           <td class="py-1 text-slate-400">{{ linea.descripcion_linea or '' }}</td>
         </tr>
         {% endfor %}

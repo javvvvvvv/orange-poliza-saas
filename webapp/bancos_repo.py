@@ -54,7 +54,9 @@ def actualizar_configuracion_iva(empresa_id, datos):
                cuenta_iva_trasladado = ?, cuenta_iva_por_trasladar = ?,
                cuenta_complementaria_ingresos = ?, cuenta_complementaria_egresos = ?,
                cuenta_dif_cambiaria = ?, retenciones_activas = ?,
-               cuenta_retencion_iva = ?, cuenta_retencion_isr = ?, base_datos_contpaqi = ?
+               cuenta_retencion_iva = ?, cuenta_retencion_isr = ?,
+               cuenta_anticipo_clientes = ?, cuenta_anticipo_proveedores = ?,
+               base_datos_contpaqi = ?
                WHERE id = ?""",
             (
                 datos["tasa_iva"], datos.get("cuenta_iva_acreditable"),
@@ -63,6 +65,7 @@ def actualizar_configuracion_iva(empresa_id, datos):
                 datos.get("cuenta_complementaria_egresos"), datos.get("cuenta_dif_cambiaria"),
                 1 if datos.get("retenciones_activas") else 0,
                 datos.get("cuenta_retencion_iva"), datos.get("cuenta_retencion_isr"),
+                datos.get("cuenta_anticipo_clientes"), datos.get("cuenta_anticipo_proveedores"),
                 datos.get("base_datos_contpaqi"), empresa_id,
             ),
         )

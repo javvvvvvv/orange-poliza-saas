@@ -26,6 +26,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import uuid as uuid_lib
 from dataclasses import dataclass
 from typing import Literal, Optional
@@ -141,12 +142,21 @@ def _splice(renglon: str, start: int, end: int, valor: str, justify: Literal["le
 def _fila_p(mov: MovimientoPoliza, nombre_empresa: Optional[str]) -> str:
     r = _TPL_P
     r = _splice(r, *_pos("P", 0), mov.fecha.strftime("%Y%m%d"), "left")
-    r = _splice(r, *_pos("P", 1), "1" if mov.tipo == "ingreso" else "2", "left")
+    tipo_cod = "1" if mov.tipo == "ingreso" else ("3" if mov.tipo == "diario" else "2")
+    r = _splice(r, *_pos("P", 1), tipo_cod, "left")
     r = _splice(r, *_pos("P", 2), str(mov.numero_poliza), "right")
-    xml_tag = " (ADJUNTAR XML)" if mov.tiene_iva else ""
-    # Se usa 40, 140 en lugar de _pos("P", 3) para preservar el espacio en la posicin 140
-    # y evitar que conceptos muy largos se peguen al "Sistema Origen" (posicin 141) provocando un error en Contpaqi.
-    r = _splice(r, 40, 140, f"{mov.descripcion}{xml_tag}", "left", permitir_truncar=True)
+    
+    tiene_cfdi = bool(getattr(mov, "cfdi_uuid", None) or getattr(mov, "facturas", None))
+    if tiene_cfdi:
+        xml_tag = " (OPE sistema)"
+    elif getattr(mov, "tiene_iva", False):
+        xml_tag = " (ADJUNTAR XML)"
+    else:
+        xml_tag = ""
+    desc_limpia = re.sub(r"\s*\((?:adjuntar\s*xml|ope\s*sistema)\)", "", mov.descripcion or "", flags=re.IGNORECASE).strip()
+    # Se usa 40, 140 en lugar de _pos("P", 3) para preservar el espacio en la posición 140
+    # y evitar que conceptos muy largos se peguen al "Sistema Origen" (posición 141) provocando un error en Contpaqi.
+    r = _splice(r, 40, 140, f"{desc_limpia}{xml_tag}", "left", permitir_truncar=True)
     r = _splice(r, *_pos("P", 4), _nuevo_guid(nombre_empresa), "left")
     return r
 
@@ -378,6 +388,11 @@ def _construir_filas(movimientos: list[MovimientoPoliza], cat: ConfiguracionCata
             if uuids:
                 for u in uuids:
                     filas.append(_fila_am(u))
+
+        if not getattr(mov, "afectar_iva_fiscal", True):
+            for u in uuids:
+                filas.append(_fila_ad(u))
+            continue
 
         impuestos_totales = [imp for f in facturas for imp in f.impuestos]
         if not impuestos_totales:

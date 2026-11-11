@@ -16,16 +16,18 @@ from db import get_connection
 
 def listar(empresa_id, tipo_movimiento=None):
     with get_connection() as con:
+        sql = """
+            SELECT rg.*,
+                   COALESCE(cc.descripcion, cc2.descripcion, '') AS nombre_cuenta
+            FROM reglas_generales rg
+            LEFT JOIN cuentas_catalogo cc ON cc.empresa_id = rg.empresa_id AND cc.cuenta = rg.cuenta
+            LEFT JOIN cuentas_catalogo cc2 ON cc2.empresa_id = rg.empresa_id AND REPLACE(cc2.cuenta, '-', '') = REPLACE(rg.cuenta, '-', '')
+            WHERE rg.empresa_id = ?
+        """
         if tipo_movimiento:
-            filas = con.execute(
-                "SELECT * FROM reglas_generales WHERE empresa_id = ? AND tipo_movimiento = ? ORDER BY orden",
-                (empresa_id, tipo_movimiento),
-            ).fetchall()
+            filas = con.execute(sql + " AND rg.tipo_movimiento = ? ORDER BY rg.orden", (empresa_id, tipo_movimiento)).fetchall()
         else:
-            filas = con.execute(
-                "SELECT * FROM reglas_generales WHERE empresa_id = ? ORDER BY tipo_movimiento, orden",
-                (empresa_id,),
-            ).fetchall()
+            filas = con.execute(sql + " ORDER BY rg.tipo_movimiento, rg.orden", (empresa_id,)).fetchall()
         return filas
 
 def agregar(empresa_id, tipo_movimiento, cuenta, naturaleza, formula, descripcion_linea=None):

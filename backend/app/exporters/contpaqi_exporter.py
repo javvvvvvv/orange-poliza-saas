@@ -47,6 +47,7 @@ de Contpaqi la primera vez.
 """
 
 import os
+import re
 import uuid as uuid_lib
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -104,6 +105,7 @@ class MovimientoPoliza:
     ret_iva: float = 0.0
     ret_isr: float = 0.0
     id_persona: str = ""  # código de proveedor/cliente en el catálogo de Contpaqi
+    afectar_iva_fiscal: bool = True
 
 @dataclass
 class ConfiguracionCatalogoImpuestos:
@@ -124,10 +126,18 @@ def _nuevo_guid() -> str:
     return str(uuid_lib.uuid4()).upper()
 
 def _fila_p(mov: MovimientoPoliza) -> list:
-    xml_tag = " (ADJUNTAR XML)" if mov.tiene_iva else ""
+    tiene_cfdi = bool(getattr(mov, "cfdi_uuid", None) or getattr(mov, "facturas", None))
+    if tiene_cfdi:
+        xml_tag = " (OPE sistema)"
+    elif getattr(mov, "tiene_iva", False):
+        xml_tag = " (ADJUNTAR XML)"
+    else:
+        xml_tag = ""
+    desc_limpia = re.sub(r"\s*\((?:adjuntar\s*xml|ope\s*sistema)\)", "", mov.descripcion or "", flags=re.IGNORECASE).strip()
+    tipo_cod = 1 if mov.tipo == "ingreso" else (3 if mov.tipo == "diario" else 2)
     return [
-        "P", mov.fecha, 1 if mov.tipo == "ingreso" else 2, mov.numero_poliza,
-        1, "0", f"{mov.descripcion}{xml_tag}", 11, 0, 0, _nuevo_guid(),
+        "P", mov.fecha, tipo_cod, mov.numero_poliza,
+        1, "0", f"{desc_limpia}{xml_tag}", 11, 0, 0, _nuevo_guid(),
     ]
 
 def _fila_m1(mov: MovimientoPoliza, linea, referencia: str) -> list:

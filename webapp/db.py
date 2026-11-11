@@ -323,6 +323,14 @@ def _aplicar_migraciones(con: Connection):
         ("empresas", "cuenta_retencion_isr", "TEXT"),
         ("cuentas_catalogo", "id_contpaqi", "INTEGER"),
         ("cuentas_catalogo", "id_comparacion", "TEXT"),
+        ("empresas", "cuenta_anticipo_clientes", "TEXT"),
+        ("empresas", "cuenta_anticipo_proveedores", "TEXT"),
+        ("movimientos", "poliza_aplicacion_id", "INTEGER"),
+        ("movimientos", "es_anticipo", "INTEGER NOT NULL DEFAULT 0"),
+        ("polizas", "es_anticipo", "INTEGER NOT NULL DEFAULT 0"),
+        ("polizas", "es_aplicacion_anticipo", "INTEGER NOT NULL DEFAULT 0"),
+        ("polizas", "poliza_origen_id", "INTEGER"),
+        ("polizas", "afectar_iva_fiscal", "INTEGER NOT NULL DEFAULT 1"),
     ]
     cur = con.cursor()
 

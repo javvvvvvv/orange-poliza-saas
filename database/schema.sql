@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS empresas (
     retenciones_activas             INTEGER NOT NULL DEFAULT 0,
     cuenta_retencion_iva            TEXT,
     cuenta_retencion_isr            TEXT,
+    cuenta_anticipo_clientes        TEXT,
+    cuenta_anticipo_proveedores     TEXT,
 
     -- Nombre interno de base de datos en CONTPAQi (ej. "ctNOMBRE_EMPRESA"),
     -- NO el nombre bonito que ve el usuario. Lo usan el bridge y la
@@ -191,6 +193,10 @@ CREATE TABLE IF NOT EXISTS polizas (
     cuadrada        INTEGER NOT NULL DEFAULT 0,
     enviada_contpaqi INTEGER NOT NULL DEFAULT 0, -- 1 = enviada al SDK o exportada
     fecha_envio     TEXT,
+    es_anticipo     INTEGER NOT NULL DEFAULT 0,
+    es_aplicacion_anticipo INTEGER NOT NULL DEFAULT 0,
+    poliza_origen_id INTEGER REFERENCES polizas(id) ON DELETE SET NULL,
+    afectar_iva_fiscal INTEGER NOT NULL DEFAULT 1,
     aprobada_por    INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
     generada_en     TEXT NOT NULL DEFAULT (NOW()::text),
     UNIQUE (empresa_id, tipo, numero)
@@ -244,7 +250,9 @@ CREATE TABLE IF NOT EXISTS movimientos (
     estado_clasificacion        TEXT NOT NULL DEFAULT 'pendiente',
         -- 'pendiente' | 'automatico' | 'sugerido_ia' | 'manual' | 'revisado'
 
-    poliza_id                   INTEGER REFERENCES polizas(id) ON DELETE SET NULL
+    poliza_id                   INTEGER REFERENCES polizas(id) ON DELETE SET NULL,
+    poliza_aplicacion_id        INTEGER REFERENCES polizas(id) ON DELETE SET NULL,
+    es_anticipo                 INTEGER NOT NULL DEFAULT 0
 );
 
 -- ---------------------------------------------------------------------

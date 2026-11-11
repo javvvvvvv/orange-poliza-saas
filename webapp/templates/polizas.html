@@ -50,8 +50,18 @@
     <div class="flex items-start justify-between cursor-pointer" onclick="document.getElementById('detalle-{{ p.id }}').classList.toggle('hidden')">
       <div>
         <div class="flex flex-wrap items-center gap-2 font-medium text-marino-900">
-          <span>{{ 'Ingreso' if p.tipo == 'ingreso' else 'Egreso' }} #{{ p.numero }}</span>
+          <span>{{ 'Diario' if p.tipo == 'diario' else ('Ingreso' if p.tipo == 'ingreso' else 'Egreso') }} #{{ p.numero }}</span>
           <span class="text-slate-400 font-normal">· {{ p.fecha }}</span>
+          {% if p.es_anticipo %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-50 text-orange-700 border border-orange-200">
+              Anticipo
+            </span>
+          {% endif %}
+          {% if p.es_aplicacion_anticipo %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+              Aplicación Anticipo
+            </span>
+          {% endif %}
           {% if p.enviada_contpaqi %}
             <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200" title="Enviada a CONTPAQi el {{ p.fecha_envio or '' }}">
               ✓ Enviada a CONTPAQi

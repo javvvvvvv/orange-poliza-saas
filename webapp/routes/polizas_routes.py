@@ -376,7 +376,7 @@ def polizas_revision(empresa_id):
     con = get_connection()
     polizas = con.execute(
         """SELECT p.*, m.id AS mov_id, m.descripcion AS descripcion_movimiento, m.numero_factura
-           FROM polizas p LEFT JOIN movimientos m ON m.poliza_id = p.id
+           FROM polizas p LEFT JOIN movimientos m ON (m.poliza_id = p.id OR m.poliza_aplicacion_id = p.id)
            WHERE p.empresa_id = ? ORDER BY p.fecha DESC, p.tipo, p.numero""",
         (empresa_id,),
     ).fetchall()

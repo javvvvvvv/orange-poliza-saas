@@ -257,9 +257,26 @@ class RepositorioReglas:
             filas_lineas = con.execute(
                 f"SELECT * FROM plantilla_movimientos WHERE regla_id IN ({r_ids_str}) ORDER BY orden ASC"
             ).fetchall()
+
+            # Enriquecer con nombres de cuenta del catálogo
+            filas_cuentas = con.execute(
+                "SELECT cuenta, descripcion FROM cuentas_catalogo WHERE empresa_id = ?",
+                (empresa_id,),
+            ).fetchall()
+            nombres_cuentas = {}
+            for fc in filas_cuentas:
+                c_orig = str(fc["cuenta"] or "").strip()
+                c_clean = c_orig.replace("-", "").replace(".", "")
+                nombres_cuentas[c_orig] = fc["descripcion"]
+                nombres_cuentas[c_clean] = fc["descripcion"]
+
             plantillas_por_regla: dict[int, list[dict]] = {}
             for fl in filas_lineas:
-                plantillas_por_regla.setdefault(fl["regla_id"], []).append(dict(fl))
+                linea_d = dict(fl)
+                cta = str(linea_d.get("cuenta") or "").strip()
+                cta_clean = cta.replace("-", "").replace(".", "")
+                linea_d["nombre_cuenta"] = nombres_cuentas.get(cta) or nombres_cuentas.get(cta_clean) or ""
+                plantillas_por_regla.setdefault(fl["regla_id"], []).append(linea_d)
 
             for r in reglas:
                 r["palabras_clave"] = palabras_por_regla.get(r["id"], [])

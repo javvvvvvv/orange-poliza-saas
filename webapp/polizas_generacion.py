@@ -51,7 +51,11 @@ def _concepto_y_referencia(fila, cfdis):
         concepto = principal["nombre_emisor"] or principal["rfc_emisor"]
     else:
         concepto = principal["nombre_receptor"] or principal["rfc_receptor"]
-    return concepto, referencia
+    
+    tiene_cfdi = bool(cfdis)
+    tiene_iva = fila.get("afectable_impuestos") is None or bool(fila.get("afectable_impuestos"))
+    from polizas_edicion import formatear_concepto_poliza
+    return formatear_concepto_poliza(concepto, tiene_cfdi, tiene_iva), referencia
 
 
 def _ultimo_numero(cur, empresa_id, tipo) -> int:

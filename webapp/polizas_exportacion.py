@@ -70,10 +70,18 @@ def _cargar_lineas(con, poliza_ids) -> dict:
 
 
 def _cargar_movimientos_de_polizas(con, poliza_ids) -> dict:
+    if not poliza_ids:
+        return {}
     filas = con.execute(
-        _SQL_MOVIMIENTOS_CON_BANCO + f" WHERE m.poliza_id IN ({_lista_ids(poliza_ids)})"
+        _SQL_MOVIMIENTOS_CON_BANCO + f" WHERE m.poliza_id IN ({_lista_ids(poliza_ids)}) OR m.poliza_aplicacion_id IN ({_lista_ids(poliza_ids)})"
     ).fetchall()
-    return {f["poliza_id"]: f for f in filas}
+    res = {}
+    for f in filas:
+        if f.get("poliza_id"):
+            res[f["poliza_id"]] = f
+        if f.get("poliza_aplicacion_id"):
+            res[f["poliza_aplicacion_id"]] = f
+    return res
 
 
 def _cargar_impuestos_cfdi(con, cfdi_ids) -> dict:
@@ -91,7 +99,8 @@ def _validar_cuentas_banco(polizas, movimientos_por_poliza):
     sin_cuenta = [
         f"{p['tipo']} {p['numero']}"
         for p in polizas
-        if p["id"] in movimientos_por_poliza
+        if p["tipo"] in ("ingreso", "egreso")
+        and p["id"] in movimientos_por_poliza
         and not _sin_guiones(movimientos_por_poliza[p["id"]]["cuenta_banco"])
     ]
     if sin_cuenta:
@@ -163,8 +172,12 @@ def _armar_movimiento_poliza(poliza, lineas, movimiento, cfdis, impuestos_por_cf
     facturas = []
     cuenta_banco = None
 
+    afectar_iva_fiscal = True
+    if hasattr(poliza, "keys") and "afectar_iva_fiscal" in poliza.keys():
+        afectar_iva_fiscal = bool(poliza["afectar_iva_fiscal"])
+
     if cfdis:
-        cuenta_banco = _sin_guiones(movimiento["cuenta_banco"])
+        cuenta_banco = _sin_guiones(movimiento["cuenta_banco"]) if movimiento else ""
         facturas, cfdi_impuestos = _facturas_desde_cfdis(cfdis, impuestos_por_cfdi)
         if len(facturas) == 1:
             cfdi_uuid, cfdi_serie, cfdi_folio = facturas[0].uuid, facturas[0].serie, facturas[0].folio
@@ -174,13 +187,21 @@ def _armar_movimiento_poliza(poliza, lineas, movimiento, cfdis, impuestos_por_cf
         cuenta_banco = _sin_guiones(movimiento["cuenta_banco"])
         cfdi_impuestos = [_impuesto_estimado(poliza, lineas, movimiento, empresa)]
 
+    if not afectar_iva_fiscal:
+        cfdi_impuestos = []
+        for f in facturas:
+            f.impuestos = []
+
+    tiene_cfdi = bool(cfdi_uuid or facturas)
+    tiene_iva_flag = bool(tiene_cfdi or (movimiento and (movimiento["afectable_impuestos"] is None or bool(movimiento["afectable_impuestos"]))))
+
     return MovimientoPoliza(
         numero_poliza=poliza["numero"],
         tipo=poliza["tipo"],
         fecha=datetime.strptime(poliza["fecha"], "%Y-%m-%d"),
         descripcion=poliza.get("concepto") or (movimiento["descripcion"] if movimiento else ""),
         lineas=lineas,
-        tiene_iva=bool(cfdi_uuid or facturas),
+        tiene_iva=tiene_iva_flag,
         numero_factura=poliza["referencia"] or "",
         cfdi_uuid=cfdi_uuid,
         cfdi_serie=cfdi_serie,
@@ -188,6 +209,7 @@ def _armar_movimiento_poliza(poliza, lineas, movimiento, cfdis, impuestos_por_cf
         cfdi_impuestos=cfdi_impuestos,
         facturas=facturas,
         cuenta_banco=cuenta_banco,
+        afectar_iva_fiscal=afectar_iva_fiscal,
     )
 
 

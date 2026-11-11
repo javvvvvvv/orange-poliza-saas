@@ -403,6 +403,8 @@ def configuracion(empresa_id):
             "retenciones_activas": request.form.get("retenciones_activas") == "on",
             "cuenta_retencion_iva": request.form.get("cuenta_retencion_iva") or None,
             "cuenta_retencion_isr": request.form.get("cuenta_retencion_isr") or None,
+            "cuenta_anticipo_clientes": request.form.get("cuenta_anticipo_clientes") or None,
+            "cuenta_anticipo_proveedores": request.form.get("cuenta_anticipo_proveedores") or None,
             "base_datos_contpaqi": request.form.get("base_datos_contpaqi") or None,
         }
         print(f"DATOS: {datos}", flush=True); bancos_repo.actualizar_configuracion_iva(empresa_id, datos)
@@ -851,6 +853,7 @@ def movimiento_asociar_cfdi(empresa_id, movimiento_id):
     datos = request.get_json(silent=True) or {}
     cfdi_ids = datos.get("cfdi_ids") or []
     cuenta_contraparte = (datos.get("cuenta_contraparte") or "").strip()
+    cuenta_anticipo = (datos.get("cuenta_anticipo") or "").strip()
 
     if isinstance(cfdi_ids, (int, str)):
         cfdi_ids = [int(cfdi_ids)]
@@ -868,7 +871,7 @@ def movimiento_asociar_cfdi(empresa_id, movimiento_id):
         if not mov:
             return jsonify({"ok": False, "error": "Movimiento no encontrado."}), 404
 
-        empresa = cur.execute("SELECT rfc FROM empresas WHERE id = %s", (empresa_id,)).fetchone()
+        empresa = cur.execute("SELECT * FROM empresas WHERE id = %s", (empresa_id,)).fetchone()
         rfc_empresa = (empresa["rfc"] if empresa else "") or ""
 
         placeholders = ",".join(["%s"] * len(cfdi_ids))
@@ -934,6 +937,37 @@ def movimiento_asociar_cfdi(empresa_id, movimiento_id):
             (str_folios, contraparte_rfc, movimiento_id, empresa_id)
         )
         con.commit()
+
+    # Detección de Anticipo: Si el CFDI es de mes posterior a la fecha del movimiento
+    es_mes_posterior = any(str(c["fecha"])[:7] > str(mov["fecha"])[:7] for c in cfdis)
+    if es_mes_posterior:
+        tipo_ant = "cliente" if mov["tipo"] == "ingreso" else "proveedor"
+        if not cuenta_anticipo:
+            cta_cfg = empresa.get("cuenta_anticipo_clientes") if tipo_ant == "cliente" else empresa.get("cuenta_anticipo_proveedores")
+            if cta_cfg:
+                cuenta_anticipo = cta_cfg
+
+        if not cuenta_anticipo:
+            return jsonify({
+                "ok": False,
+                "requiere_cuenta_anticipo": True,
+                "tipo_anticipo": tipo_ant,
+                "fecha_movimiento": str(mov["fecha"]),
+                "fecha_cfdi": str(cfdis[0]["fecha"]),
+                "error": f"La factura seleccionada es de un mes posterior ({str(cfdis[0]['fecha'])[:7]} vs {str(mov['fecha'])[:7]}). Corresponde a un ANTICIPO. Por favor captura la cuenta de anticipo de {tipo_ant}s."
+            }), 400
+
+        from polizas_edicion import crear_polizas_anticipo
+        res_ant = crear_polizas_anticipo(empresa_id, movimiento_id, cfdi_ids, cuenta_anticipo, cuenta_contraparte)
+        return jsonify({
+            "ok": True,
+            "es_anticipo": True,
+            "mensaje": f"{len(cfdis)} factura(s) de mes posterior asociadas como ANTICIPO. Se generaron 2 pólizas automáticamente (Anticipo #{res_ant['poliza_anticipo_id']} y Aplicación Diario #{res_ant['poliza_aplicacion_id']}).",
+            "folios": str_folios,
+            "asiento_guardado": True,
+            "poliza_anticipo_id": res_ant["poliza_anticipo_id"],
+            "poliza_aplicacion_id": res_ant["poliza_aplicacion_id"],
+        })
 
     # Si se especificó una contra-cuenta, actualizar o generar el asiento contable
     asiento_guardado = False
@@ -1152,6 +1186,8 @@ def movimientos_lista(empresa_id):
                    p.numero AS poliza_numero,
                    p.tipo AS poliza_tipo,
                    p.cuadrada AS poliza_cuadrada,
+                   p_ap.numero AS poliza_aplicacion_numero,
+                   p_ap.tipo AS poliza_aplicacion_tipo,
                    (
                        SELECT string_agg(COALESCE(c.serie, '') || COALESCE(c.folio, 'S/F'), ', ')
                        FROM cfdi_movimiento cm
@@ -1175,6 +1211,7 @@ def movimientos_lista(empresa_id):
             FROM movimientos m
             LEFT JOIN documentos_importados d ON d.id = m.documento_id
             LEFT JOIN polizas p ON p.id = m.poliza_id
+            LEFT JOIN polizas p_ap ON p_ap.id = m.poliza_aplicacion_id
             WHERE {where_sql}
             ORDER BY m.fecha DESC, m.id DESC
             LIMIT %s OFFSET %s
@@ -1183,7 +1220,7 @@ def movimientos_lista(empresa_id):
         movimientos = [dict(r) for r in movimientos_filas]
 
         # Cargar en bloque las líneas de asientos contables para los movimientos mostrados
-        poliza_ids = [m["poliza_id"] for m in movimientos if m.get("poliza_id")]
+        poliza_ids = list(set([m["poliza_id"] for m in movimientos if m.get("poliza_id")] + [m["poliza_aplicacion_id"] for m in movimientos if m.get("poliza_aplicacion_id")]))
         lineas_por_poliza = {}
         if poliza_ids:
             placeholders_pol = ",".join(["%s"] * len(poliza_ids))
@@ -1261,8 +1298,10 @@ def movimientos_lista(empresa_id):
 
     total_paginas = max(1, (total_movimientos + por_pagina - 1) // por_pagina)
 
+    empresa = bancos_repo.obtener_empresa(empresa_id)
     return render_template(
         "movimientos.html",
+        empresa=empresa,
         movimientos=movimientos,
         docs=docs,
         bancos=bancos,
