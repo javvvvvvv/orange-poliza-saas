@@ -191,12 +191,13 @@ def _armar_movimiento_poliza(poliza, lineas, movimiento, cfdis, impuestos_por_cf
     )
 
 
-def exportar_polizas(empresa_id, ruta_salida, reexportar=False, marcar_enviadas=True):
-    """Exporta a CONTPAQi solo pólizas cuadradas que no se hayan enviado antes.
+def exportar_polizas(empresa_id, ruta_salida, reexportar=False, marcar_enviadas=False):
+    """Exporta a archivo de texto / Excel para CONTPAQi solo pólizas cuadradas.
 
-    Si el archivo se escribe sin errores, las pólizas quedan marcadas como
-    enviadas y no vuelven a salir en la siguiente exportación, salvo que se
-    pida `reexportar=True`.
+    Descargar o exportar el archivo NO marca las pólizas como enviadas a CONTPAQi,
+    para evitar enviar o bloquear pólizas sin autorización explícita del usuario.
+    Solo el envío directo vía SDK o cuando se pida explícitamente `marcar_enviadas=True`
+    marcará el registro.
     """
     with get_connection() as con:
         empresa = con.execute("SELECT * FROM empresas WHERE id = ?", (empresa_id,)).fetchone()

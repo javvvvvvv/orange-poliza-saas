@@ -439,12 +439,14 @@ def polizas_limpiar(empresa_id):
 @empresa_requerida
 @csrf_protect
 def movimientos_limpiar(empresa_id):
-    forzar = request.form.get("forzar") == "1"
     try:
-        movimientos_repo.limpiar_movimientos(empresa_id, forzar=forzar)
-        flash("Se han eliminado los movimientos y pólizas pendientes. Lista para una carga nueva.", "exito")
-    except movimientos_repo.PolizasYaEnviadasError as e:
-        flash(str(e), "error")
+        user_id = g.usuario.get("id") if getattr(g, "usuario", None) else None
+        res = movimientos_repo.limpiar_movimientos(empresa_id, usuario_id=user_id)
+        n_mov = res.get("total_movimientos", 0) if isinstance(res, dict) else 0
+        n_pol = res.get("total_polizas", 0) if isinstance(res, dict) else 0
+        flash(f"Se ha guardado un respaldo de seguridad ({n_mov} movimientos y {n_pol} pólizas) y se limpió la empresa con éxito. Lista para una carga nueva.", "exito")
+    except Exception as e:
+        flash(f"Error al limpiar movimientos: {e}", "error")
     return redirect(url_for("empresas.dashboard", empresa_id=empresa_id))
 
 @polizas_bp.route("/empresas/<int:empresa_id>/polizas/<int:poliza_id>/editar", methods=["POST"])

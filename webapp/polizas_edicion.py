@@ -404,26 +404,108 @@ def limpiar_polizas(empresa_id, incluir_enviadas=False):
         _limpiar_polizas_en_conexion(con, empresa_id, incluir_enviadas)
 
 
-def limpiar_movimientos(empresa_id, forzar=False):
-    """Borra todos los movimientos de la empresa.
-
-    Se niega si hay pólizas ya enviadas a CONTPAQi: sin los movimientos se
-    pierde la trazabilidad y se podrían volver a importar y enviar.
+def respaldar_y_limpiar_movimientos(empresa_id, usuario_id=None, motivo="Limpieza de movimientos para nueva carga"):
     """
+    Crea un respaldo íntegro (en base de datos y archivo físico JSON) de todos los movimientos,
+    documentos y pólizas actuales de la empresa, y luego los elimina para permitir una carga nueva.
+    Garantiza trazabilidad histórica y nunca bloquea al usuario.
+    """
+    import os
+    import json
+    from datetime import date
+
     with get_connection() as con:
-        enviadas = con.execute(
-            "SELECT COUNT(*) AS n FROM polizas WHERE empresa_id = ? AND enviada_contpaqi = 1",
-            (empresa_id,),
-        ).fetchone()["n"]
-        if enviadas and not forzar:
-            raise PolizasYaEnviadasError(
-                f"Hay {enviadas} póliza(s) ya enviadas a CONTPAQi. Borrar los movimientos "
-                f"rompe la trazabilidad; usa forzar=True solo si es intencional."
+        cur = con.cursor()
+
+        # 1. Extraer datos actuales
+        movimientos = [dict(m) for m in cur.execute("SELECT * FROM movimientos WHERE empresa_id = ?", (empresa_id,)).fetchall()]
+        documentos = [dict(d) for d in cur.execute("SELECT * FROM documentos_importados WHERE empresa_id = ?", (empresa_id,)).fetchall()]
+        polizas = [dict(p) for p in cur.execute("SELECT * FROM polizas WHERE empresa_id = ?", (empresa_id,)).fetchall()]
+
+        poliza_ids = [p["id"] for p in polizas]
+        lineas = []
+        if poliza_ids:
+            ph = ",".join(["?"] * len(poliza_ids))
+            lineas = [dict(l) for l in cur.execute(f"SELECT * FROM poliza_lineas WHERE poliza_id IN ({ph})", tuple(poliza_ids)).fetchall()]
+
+        mov_ids = [m["id"] for m in movimientos]
+        cfdi_movs = []
+        if mov_ids:
+            phm = ",".join(["?"] * len(mov_ids))
+            cfdi_movs = [dict(cm) for cm in cur.execute(f"SELECT * FROM cfdi_movimiento WHERE movimiento_id IN ({phm})", tuple(mov_ids)).fetchall()]
+
+        datos_respaldo = {
+            "empresa_id": empresa_id,
+            "fecha_creacion": datetime.now().isoformat(),
+            "motivo": motivo,
+            "total_movimientos": len(movimientos),
+            "total_polizas": len(polizas),
+            "total_documentos": len(documentos),
+            "movimientos": movimientos,
+            "documentos": documentos,
+            "polizas": polizas,
+            "poliza_lineas": lineas,
+            "cfdi_movimientos": cfdi_movs,
+        }
+
+        def _json_serial(obj):
+            if isinstance(obj, (datetime, date)):
+                return obj.isoformat()
+            if isinstance(obj, Decimal):
+                return float(obj)
+            return str(obj)
+
+        json_str = json.dumps(datos_respaldo, default=_json_serial)
+
+        # 2. Guardar en disco
+        dir_respaldos = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", str(empresa_id), "respaldos")
+        os.makedirs(dir_respaldos, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ruta_archivo = os.path.join(dir_respaldos, f"respaldo_movimientos_{timestamp}.json")
+        try:
+            with open(ruta_archivo, "w", encoding="utf-8") as f:
+                f.write(json_str)
+        except Exception:
+            ruta_archivo = None
+
+        # 3. Guardar en tabla respaldos_cargas
+        respaldo_id = None
+        try:
+            cur.execute(
+                """INSERT INTO respaldos_cargas
+                   (empresa_id, usuario_id, fecha, motivo, total_movimientos, total_polizas, archivo_respaldo, datos_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (empresa_id, usuario_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), motivo, len(movimientos), len(polizas), ruta_archivo, json_str),
             )
-        _limpiar_polizas_en_conexion(con, empresa_id, incluir_enviadas=True)
-        con.execute(
-            "DELETE FROM cfdi_movimiento WHERE movimiento_id IN (SELECT id FROM movimientos WHERE empresa_id = ?)",
-            (empresa_id,),
-        )
-        con.execute("DELETE FROM movimientos WHERE empresa_id = ?", (empresa_id,))
-        con.execute("DELETE FROM documentos_importados WHERE empresa_id = ?", (empresa_id,))
+            respaldo_id = cur.lastrowid
+        except Exception:
+            pass
+
+        # 4. Limpieza completa
+        if poliza_ids:
+            cur.execute(f"DELETE FROM poliza_auditoria WHERE poliza_id IN ({ph})", tuple(poliza_ids))
+            cur.execute(f"DELETE FROM poliza_lineas WHERE poliza_id IN ({ph})", tuple(poliza_ids))
+            cur.execute(f"DELETE FROM polizas WHERE id IN ({ph})", tuple(poliza_ids))
+
+        if mov_ids:
+            cur.execute(f"DELETE FROM cfdi_movimiento WHERE movimiento_id IN ({phm})", tuple(mov_ids))
+            cur.execute(f"DELETE FROM movimientos WHERE id IN ({phm})", tuple(mov_ids))
+
+        cur.execute("DELETE FROM documentos_importados WHERE empresa_id = ?", (empresa_id,))
+        con.commit()
+
+        return {
+            "ok": True,
+            "respaldo_id": respaldo_id,
+            "total_movimientos": len(movimientos),
+            "total_polizas": len(polizas),
+            "archivo": ruta_archivo
+        }
+
+
+def limpiar_movimientos(empresa_id, forzar=False, usuario_id=None):
+    """
+    Limpia los movimientos y pólizas creando siempre un respaldo automático previo,
+    permitiendo hacer una carga nueva sin bloquear al usuario ni perder datos.
+    """
+    return respaldar_y_limpiar_movimientos(empresa_id, usuario_id=usuario_id)

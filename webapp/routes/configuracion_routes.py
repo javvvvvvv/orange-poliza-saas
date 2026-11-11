@@ -564,13 +564,12 @@ def documento_eliminar(empresa_id, documento_id):
         # 1. Eliminar asociaciones de CFDI de los movimientos de este documento
         cur.execute("DELETE FROM cfdi_movimiento WHERE movimiento_id IN (SELECT id FROM movimientos WHERE documento_id = %s)", (documento_id,))
 
-        # 2. Desvincular y eliminar pólizas borradores
+        # 2. Desvincular y eliminar pólizas asociadas a los movimientos del documento
         polizas_antiguas = cur.execute("SELECT DISTINCT poliza_id FROM movimientos WHERE documento_id = %s AND poliza_id IS NOT NULL", (documento_id,)).fetchall()
         cur.execute("UPDATE movimientos SET poliza_id = NULL WHERE documento_id = %s", (documento_id,))
         for p_row in polizas_antiguas:
             pid = p_row[0] if isinstance(p_row, (tuple, list)) else p_row["poliza_id"]
-            st = cur.execute("SELECT estado FROM polizas WHERE id = %s", (pid,)).fetchone()
-            if st and (st[0] if isinstance(st, (tuple, list)) else st["estado"]) != "exportada":
+            if pid:
                 cur.execute("DELETE FROM poliza_lineas WHERE poliza_id = %s", (pid,))
                 cur.execute("DELETE FROM poliza_auditoria WHERE poliza_id = %s", (pid,))
                 cur.execute("DELETE FROM polizas WHERE id = %s", (pid,))

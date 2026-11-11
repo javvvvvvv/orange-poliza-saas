@@ -334,7 +334,19 @@ def _aplicar_migraciones(con: Connection):
         accion TEXT NOT NULL,
         detalle TEXT,
         fecha TEXT NOT NULL DEFAULT (NOW()::text)
-    )
+    );
+
+    CREATE TABLE IF NOT EXISTS respaldos_cargas (
+        id SERIAL PRIMARY KEY,
+        empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+        usuario_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+        fecha TEXT NOT NULL DEFAULT (NOW()::text),
+        motivo TEXT,
+        total_movimientos INTEGER DEFAULT 0,
+        total_polizas INTEGER DEFAULT 0,
+        archivo_respaldo TEXT,
+        datos_json TEXT
+    );
     """)
 
     for tabla, columna, tipo in migraciones:

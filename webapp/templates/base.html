@@ -106,11 +106,11 @@
     <a href="/empresas/{{ eid }}/polizas/exportar" class="block px-3 py-2 rounded hover:bg-marino-800">6. Exportar .xls</a>
     <div>
         <button type="button" onclick="iniciarSincronizacionSdk({{ eid }})" class="block w-full text-left px-3 py-2 rounded hover:bg-marino-800 text-naranja-400 font-bold">
-          7. Sincronizar CONTPAQi (SDK)
+          7. Enviar Pólizas a CONTPAQi (SDK)
         </button>
     </div>
     <div class="text-xs uppercase text-slate-500 px-3 pt-4 pb-1">Mantenimiento</div>
-    <form action="/empresas/{{ eid }}/movimientos/limpiar" method="post" onsubmit="return confirm('¡CUIDADO! ¿Seguro que deseas ELIMINAR TODOS los movimientos y pólizas de esta empresa? Esto dejará la empresa en blanco para hacer una carga totalmente nueva.');">
+    <form action="/empresas/{{ eid }}/movimientos/limpiar" method="post" onsubmit="return confirm('¿Seguro que deseas vaciar todos los movimientos y pólizas de esta empresa? Se creará un RESPALDO AUTOMÁTICO de seguridad antes de borrarlos para que puedas hacer una carga nueva sin perder datos.');">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="w-full text-left px-3 py-2 rounded hover:bg-red-900 text-red-400 font-bold">Limpiar Pólizas y Movimientos</button>
     </form>
@@ -175,8 +175,8 @@
       <button type="button" id="sdk-btn-cancelar" onclick="cerrarModalSdk()" class="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold">
         Cerrar
       </button>
-      <button type="button" id="sdk-btn-iniciar" onclick="ejecutarEnvioPorLotesSdk()" class="hidden px-5 py-2 bg-naranja-500 hover:bg-naranja-600 text-white rounded-lg text-xs font-bold shadow-sm">
-        🚀 Confirmar y Enviar Ahora
+      <button type="button" id="sdk-btn-iniciar" onclick="confirmarYEnviarSdk()" class="hidden px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm">
+        📤 Autorizar y Enviar a CONTPAQi
       </button>
     </div>
   </div>
@@ -184,6 +184,13 @@
 
 <script>
   window._sdkEstado = { empresaId: null, polizaIds: [], enCurso: false, cancelar: false };
+
+  function confirmarYEnviarSdk() {
+    if (!confirm('⚠️ AUTORIZACIÓN REQUERIDA:\n\n¿Autorizas expresamente la exportación directa de estas pólizas a tu empresa de CONTPAQi?\n\nEsta acción inyectará los movimientos y asociará los UUIDs fiscales.')) {
+      return;
+    }
+    ejecutarEnvioPorLotesSdk();
+  }
 
   function cerrarModalSdk() {
     if (window._sdkEstado.enCurso) {
