@@ -28,8 +28,16 @@ class PolizasYaEnviadasError(Exception):
 
 def _normalizar_linea_manual(linea):
     """Regresa (cuenta, naturaleza, importe, descripcion), o None si es una fila vacía."""
+    cuenta_raw = str(linea.get("cuenta", "")).strip()
+    if " - " in cuenta_raw:
+        cuenta = cuenta_raw.split(" - ")[0].strip()
+    elif " " in cuenta_raw and any(c.isdigit() for c in cuenta_raw.split(" ")[0]):
+        cuenta = cuenta_raw.split(" ")[0].strip()
+    else:
+        cuenta = cuenta_raw
+
     if linea.get("naturaleza"):
-        naturaleza = "cargo" if str(linea["naturaleza"]).lower() == "cargo" else "abono"
+        naturaleza = "cargo" if str(linea["naturaleza"]).lower() in ("cargo", "debe") else "abono"
         importe = redondear_moneda(linea.get("importe", 0))
     elif a_decimal(linea.get("cargo", 0)) > Decimal("0.00"):
         naturaleza = "cargo"
@@ -38,14 +46,284 @@ def _normalizar_linea_manual(linea):
         naturaleza = "abono"
         importe = redondear_moneda(linea.get("abono", linea.get("importe", 0)))
 
-    cuenta = str(linea.get("cuenta", "")).strip()
     if not cuenta and importe == Decimal("0.00"):
         return None
     if not cuenta:
-        raise ValueError("Hay una línea con importe pero sin cuenta.")
+        raise ValueError("Hay una línea con importe pero sin cuenta contable.")
     if importe <= Decimal("0.00"):
         raise ValueError(f"La cuenta {cuenta} tiene un importe en cero o negativo.")
     return cuenta, naturaleza, importe, str(linea.get("descripcion", "")).strip()
+
+
+def obtener_asiento_movimiento(empresa_id, movimiento_id):
+    """
+    Obtiene las líneas contables de un movimiento (con nombre de cuenta desde cuentas_catalogo).
+    Si el movimiento aún no tiene póliza, genera una propuesta de asiento cuadrada con
+    la cuenta de banco y la contraparte / CFDI.
+    """
+    with get_connection() as con:
+        mov = con.execute(
+            """SELECT m.*, d.banco_id
+               FROM movimientos m
+               LEFT JOIN documentos_importados d ON d.id = m.documento_id
+               WHERE m.id = ? AND m.empresa_id = ?""",
+            (movimiento_id, empresa_id),
+        ).fetchone()
+
+        if not mov:
+            return None
+
+        poliza_id = mov["poliza_id"]
+        poliza = None
+        lineas = []
+        cargos = Decimal("0.00")
+        abonos = Decimal("0.00")
+        cuadrada = False
+
+        if poliza_id:
+            poliza = con.execute(
+                "SELECT * FROM polizas WHERE id = ? AND empresa_id = ?",
+                (poliza_id, empresa_id),
+            ).fetchone()
+
+            filas_lineas = con.execute(
+                """SELECT pl.id, pl.orden, pl.cuenta, pl.naturaleza, pl.importe, pl.descripcion,
+                          cc.descripcion AS nombre_cuenta
+                   FROM poliza_lineas pl
+                   LEFT JOIN cuentas_catalogo cc ON cc.empresa_id = ?
+                        AND (cc.cuenta = pl.cuenta OR REPLACE(cc.cuenta, '-', '') = REPLACE(pl.cuenta, '-', ''))
+                   WHERE pl.poliza_id = ?
+                   ORDER BY pl.orden ASC, pl.id ASC""",
+                (empresa_id, poliza_id),
+            ).fetchall()
+
+            for fl in filas_lineas:
+                imp = redondear_moneda(fl["importe"])
+                es_cargo = fl["naturaleza"].lower() in ("cargo", "debe")
+                cargos += imp if es_cargo else Decimal("0.00")
+                abonos += imp if not es_cargo else Decimal("0.00")
+                lineas.append({
+                    "id": fl["id"],
+                    "cuenta": fl["cuenta"],
+                    "nombre_cuenta": fl["nombre_cuenta"] or "Cuenta no catalogada",
+                    "naturaleza": "cargo" if es_cargo else "abono",
+                    "cargo": float(imp) if es_cargo else 0.0,
+                    "abono": float(imp) if not es_cargo else 0.0,
+                    "descripcion": fl["descripcion"] or "",
+                })
+            cuadrada = bool(poliza["cuadrada"]) if poliza else (cargos == abonos)
+
+        else:
+            # Movimiento sin póliza: Proponer asiento inicial sugerido
+            # 1. Obtener cuenta de banco
+            banco_row = None
+            if mov["banco_id"]:
+                banco_row = con.execute(
+                    "SELECT id, nombre, cuenta_contable FROM bancos WHERE id = ? AND empresa_id = ?",
+                    (mov["banco_id"], empresa_id),
+                ).fetchone()
+            if not banco_row or not banco_row["cuenta_contable"]:
+                banco_row = con.execute(
+                    "SELECT id, nombre, cuenta_contable FROM bancos WHERE empresa_id = ? AND cuenta_contable IS NOT NULL AND cuenta_contable != '' ORDER BY id ASC LIMIT 1",
+                    (empresa_id,),
+                ).fetchone()
+
+            cuenta_banco = banco_row["cuenta_contable"] if banco_row and banco_row["cuenta_contable"] else "10201001"
+            nom_banco_row = con.execute(
+                "SELECT descripcion FROM cuentas_catalogo WHERE empresa_id = ? AND (cuenta = ? OR REPLACE(cuenta, '-', '') = REPLACE(?, '-', '')) LIMIT 1",
+                (empresa_id, cuenta_banco, cuenta_banco),
+            ).fetchone()
+            nombre_banco = nom_banco_row["descripcion"] if nom_banco_row else (banco_row["nombre"] if banco_row else "Banco")
+
+            # 2. Buscar cuenta de contraparte si existe por RFC o nombre
+            cuenta_contra = ""
+            nombre_contra = ""
+            if mov["rfc_contraparte"]:
+                cta_match = con.execute(
+                    "SELECT cuenta, descripcion FROM cuentas_catalogo WHERE empresa_id = ? AND descripcion ILIKE ? LIMIT 1",
+                    (empresa_id, f"%{mov['rfc_contraparte']}%"),
+                ).fetchone()
+                if cta_match:
+                    cuenta_contra = cta_match["cuenta"]
+                    nombre_contra = cta_match["descripcion"]
+
+            tot = redondear_moneda(mov["total"])
+            concepto_mov = mov["descripcion"] or ""
+
+            if mov["tipo"] == "egreso":
+                # Egreso: Cargo a Proveedor/Gasto, Abono a Banco
+                lineas.append({
+                    "id": None,
+                    "cuenta": cuenta_contra,
+                    "nombre_cuenta": nombre_contra or "Contraparte (Proveedor / Gasto)",
+                    "naturaleza": "cargo",
+                    "cargo": float(tot),
+                    "abono": 0.0,
+                    "descripcion": concepto_mov,
+                })
+                lineas.append({
+                    "id": None,
+                    "cuenta": cuenta_banco,
+                    "nombre_cuenta": nombre_banco,
+                    "naturaleza": "abono",
+                    "cargo": 0.0,
+                    "abono": float(tot),
+                    "descripcion": concepto_mov,
+                })
+            else:
+                # Ingreso: Cargo a Banco, Abono a Cliente/Ingreso
+                lineas.append({
+                    "id": None,
+                    "cuenta": cuenta_banco,
+                    "nombre_cuenta": nombre_banco,
+                    "naturaleza": "cargo",
+                    "cargo": float(tot),
+                    "abono": 0.0,
+                    "descripcion": concepto_mov,
+                })
+                lineas.append({
+                    "id": None,
+                    "cuenta": cuenta_contra,
+                    "nombre_cuenta": nombre_contra or "Contraparte (Cliente / Ingreso)",
+                    "naturaleza": "abono",
+                    "cargo": 0.0,
+                    "abono": float(tot),
+                    "descripcion": concepto_mov,
+                })
+
+            cargos = tot
+            abonos = tot
+            cuadrada = True
+
+        return {
+            "movimiento": {
+                "id": mov["id"],
+                "fecha": str(mov["fecha"]),
+                "tipo": mov["tipo"],
+                "total": float(mov["total"]),
+                "descripcion": mov["descripcion"],
+                "rfc_contraparte": mov["rfc_contraparte"] or "",
+                "numero_factura": mov["numero_factura"] or "",
+                "referencia": mov["referencia_bancaria"] or "",
+                "estado_clasificacion": mov["estado_clasificacion"],
+            },
+            "poliza_id": poliza_id,
+            "poliza_numero": poliza["numero"] if poliza else None,
+            "poliza_tipo": poliza["tipo"] if poliza else mov["tipo"],
+            "concepto": poliza["concepto"] if poliza else (mov["descripcion"] or ""),
+            "lineas": lineas,
+            "total_cargos": float(cargos),
+            "total_abonos": float(abonos),
+            "diferencia": float(abs(cargos - abonos)),
+            "cuadrada": cuadrada,
+        }
+
+
+def guardar_asiento_movimiento(empresa_id, movimiento_id, lineas, concepto=None):
+    """
+    Guarda o actualiza el asiento contable completo de un movimiento.
+    Valida cuadre exacto de cargos y abonos, crea la póliza si no existe,
+    reemplaza las líneas y actualiza el estado del movimiento a 'manual'.
+    """
+    if not lineas or not isinstance(lineas, list):
+        raise ValueError("El asiento debe contener líneas contables.")
+
+    normalizadas = [n for n in (_normalizar_linea_manual(l) for l in lineas) if n]
+    if len(normalizadas) < 2:
+        raise ValueError("El asiento contable debe tener al menos dos líneas con cuenta e importe.")
+
+    cargos = MontoDecimal("0.00")
+    abonos = MontoDecimal("0.00")
+    for cuenta, naturaleza, importe, descripcion in normalizadas:
+        if naturaleza == "cargo":
+            cargos = redondear_moneda(cargos + importe)
+        else:
+            abonos = redondear_moneda(abonos + importe)
+
+    diferencia = redondear_moneda(cargos - abonos)
+    if abs(diferencia) > Decimal("0.05"):
+        raise ValueError(
+            f"El asiento está descuadrado: Cargos ${cargos:,.2f} vs Abonos ${abonos:,.2f} "
+            f"(Diferencia: ${abs(diferencia):,.2f}). Deben sumar lo mismo."
+        )
+
+    cuadrada = 1 if diferencia == Decimal("0.00") else 0
+
+    with get_connection() as con:
+        cur = con.cursor()
+        mov = cur.execute(
+            "SELECT * FROM movimientos WHERE id = ? AND empresa_id = ?",
+            (movimiento_id, empresa_id),
+        ).fetchone()
+        if not mov:
+            raise ValueError("Movimiento no encontrado.")
+
+        poliza_id = mov["poliza_id"]
+        tipo_poliza = "egreso" if mov["tipo"] == "egreso" else "ingreso"
+        concepto_final = (concepto or mov["descripcion"] or f"Póliza {tipo_poliza} {mov['fecha']}").strip()
+        fecha_poliza = str(mov["fecha"])
+
+        if poliza_id:
+            cur.execute(
+                """UPDATE polizas
+                   SET concepto = ?, fecha = ?, cuadrada = ?, enviada_contpaqi = 0
+                   WHERE id = ? AND empresa_id = ?""",
+                (concepto_final, fecha_poliza, cuadrada, poliza_id, empresa_id),
+            )
+            cur.execute("DELETE FROM poliza_lineas WHERE poliza_id = ?", (poliza_id,))
+        else:
+            sig_num_row = cur.execute(
+                "SELECT COALESCE(MAX(numero), 0) + 1 FROM polizas WHERE empresa_id = ? AND tipo = ?",
+                (empresa_id, tipo_poliza),
+            ).fetchone()
+            sig_num = sig_num_row[0] if sig_num_row else 1
+
+            cur.execute(
+                """INSERT INTO polizas
+                   (empresa_id, tipo, numero, fecha, concepto, cuadrada, enviada_contpaqi)
+                   VALUES (?, ?, ?, ?, ?, ?, 0)""",
+                (empresa_id, tipo_poliza, sig_num, fecha_poliza, concepto_final, cuadrada),
+            )
+            poliza_id = cur.lastrowid
+            if not poliza_id:
+                # Fallback postgres RETURNING / MAX id
+                poliza_id = cur.execute(
+                    "SELECT id FROM polizas WHERE empresa_id = ? AND tipo = ? AND numero = ? ORDER BY id DESC LIMIT 1",
+                    (empresa_id, tipo_poliza, sig_num)
+                ).fetchone()[0]
+
+            cur.execute(
+                "UPDATE movimientos SET poliza_id = ?, estado_clasificacion = 'manual' WHERE id = ? AND empresa_id = ?",
+                (poliza_id, movimiento_id, empresa_id),
+            )
+
+        for orden, (cuenta, naturaleza, importe, descripcion) in enumerate(normalizadas):
+            cur.execute(
+                """INSERT INTO poliza_lineas
+                   (poliza_id, orden, cuenta, naturaleza, importe, descripcion, formula_usada)
+                   VALUES (?, ?, ?, ?, ?, ?, 'MANUAL')""",
+                (poliza_id, orden, cuenta, naturaleza, importe, descripcion),
+            )
+
+        cur.execute(
+            """INSERT INTO poliza_auditoria (poliza_id, paso, detalle)
+               VALUES (?, 0, ?)""",
+            (
+                poliza_id,
+                f"Edición manual de asiento ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}): "
+                f"Cargos ${cargos:,.2f}, Abonos ${abonos:,.2f} -> {'Cuadrada' if cuadrada else 'Descuadrada'}",
+            ),
+        )
+        con.commit()
+
+    return {
+        "ok": True,
+        "poliza_id": poliza_id,
+        "cuadrada": bool(cuadrada),
+        "cargos": float(cargos),
+        "abonos": float(abonos),
+        "diferencia": float(abs(diferencia)),
+    }
 
 
 def actualizar_poliza(poliza_id, lineas, empresa_id):
@@ -64,8 +342,7 @@ def actualizar_poliza(poliza_id, lineas, empresa_id):
         ).fetchone()
         if not poliza:
             raise ValueError("Póliza no encontrada.")
-        if poliza["enviada_contpaqi"]:
-            raise ValueError("La póliza ya fue exportada a CONTPAQi y no se puede editar.")
+        con.execute("UPDATE polizas SET enviada_contpaqi = 0 WHERE id = ?", (poliza_id,))
 
         con.execute("DELETE FROM poliza_lineas WHERE poliza_id = ?", (poliza_id,))
         cargos = MontoDecimal("0.00")

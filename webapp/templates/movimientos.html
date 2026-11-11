@@ -1,64 +1,93 @@
 {% extends "base.html" %}
-{% block titulo %}Revisar Movimientos Bancarios{% endblock %}
+{% block titulo %}Revisar Movimientos Bancarios y Asientos{% endblock %}
 {% block contenido %}
 {% set eid = request.view_args.get('empresa_id') %}
+
+<!-- DATALIST DEL CATÁLOGO DE CUENTAS PARA AUTOCOMPLETADO RÁPIDO -->
+<datalist id="cuentas-catalogo">
+  {% for c in cuentas %}
+  <option value="{{ c.cuenta }}">{{ c.cuenta }} - {{ c.descripcion }}</option>
+  {% endfor %}
+</datalist>
+
 <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
   <div>
-    <h1 class="text-xl font-bold text-marino-900">Revisión y Edición de Movimientos Bancarios</h1>
+    <h1 class="text-xl font-bold text-marino-900 flex items-center gap-2">
+      <span>🏦</span> Revisión de Movimientos, Facturas y Asientos Contables
+    </h1>
     <p class="text-xs text-slate-500 mt-1">
-      Revisa todos los movimientos importados de los estados de cuenta, corrige sus datos, consulta y vincula facturas XML (CFDI) en caso de que falten.
+      Revisa cada movimiento bancario, verifica si las facturas XML cubren el monto total, consulta a qué cuentas va y edita el asiento contable con nombres de cuenta del catálogo.
     </p>
   </div>
   <div class="flex items-center gap-2">
+    <a href="/empresas/{{ eid }}/pendientes"
+       class="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-bold shadow-sm flex items-center gap-1.5 transition-colors">
+      <span>⚡</span> Asistente Pendientes
+    </a>
     <a href="/empresas/{{ eid }}/importar"
        class="px-3.5 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-xs font-bold shadow-sm flex items-center gap-1.5 transition-colors">
       <span>➕</span> Importar Más Movimientos
     </a>
     <a href="/empresas/{{ eid }}/documentos"
        class="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold shadow-sm transition-colors">
-      <span>📂</span> Ver Documentos / Re-mapear
+      <span>📂</span> Ver Documentos
     </a>
   </div>
 </div>
 
-<!-- TARJETAS DE RESUMEN -->
-<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-  <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-    <div class="text-xs uppercase text-slate-400 font-semibold tracking-wider">Total Movimientos</div>
+<!-- TARJETAS DE RESUMEN Y COBERTURA -->
+<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+  <div class="bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm">
+    <div class="text-[11px] uppercase text-slate-400 font-semibold tracking-wider">Total Movimientos</div>
     <div class="text-2xl font-bold text-marino-900 mt-1">{{ resumen.total or 0 }}</div>
     <div class="text-xs text-slate-500 mt-0.5 font-mono">${{ "%.2f"|format(resumen.suma_total or 0) }}</div>
   </div>
-  <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-    <div class="text-xs uppercase text-slate-400 font-semibold tracking-wider">Pendientes de Clasificar</div>
-    <div class="text-2xl font-bold text-amber-600 mt-1">{{ resumen.pendientes or 0 }}</div>
-    <div class="text-xs text-slate-500 mt-0.5">Esperando asignación o regla</div>
+  <div class="bg-white border border-emerald-200 rounded-xl p-3.5 shadow-sm bg-emerald-50/20">
+    <div class="text-[11px] uppercase text-emerald-700 font-semibold tracking-wider">✓ Cubiertos 100%</div>
+    <div class="text-2xl font-bold text-emerald-700 mt-1">{{ resumen.cubiertos_100 or 0 }}</div>
+    <div class="text-xs text-emerald-600 mt-0.5">Facturas cubren monto exacto</div>
   </div>
-  <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-    <div class="text-xs uppercase text-slate-400 font-semibold tracking-wider">Con Factura XML</div>
-    <div class="text-2xl font-bold text-emerald-600 mt-1">{{ resumen.con_cfdi or 0 }}</div>
-    <div class="text-xs text-slate-500 mt-0.5">Asociados automáticamente o a mano</div>
+  <div class="bg-white border border-amber-200 rounded-xl p-3.5 shadow-sm bg-amber-50/20">
+    <div class="text-[11px] uppercase text-amber-700 font-semibold tracking-wider">⚠ Facturas Parciales</div>
+    <div class="text-2xl font-bold text-amber-600 mt-1">{{ resumen.parciales or 0 }}</div>
+    <div class="text-xs text-amber-600 mt-0.5">Falta cubrir parte del importe</div>
   </div>
-  <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-    <div class="text-xs uppercase text-slate-400 font-semibold tracking-wider">Con Póliza Generada</div>
+  <div class="bg-white border border-blue-200 rounded-xl p-3.5 shadow-sm bg-blue-50/20">
+    <div class="text-[11px] uppercase text-blue-700 font-semibold tracking-wider">Con Póliza Generada</div>
     <div class="text-2xl font-bold text-blue-600 mt-1">{{ resumen.con_poliza or 0 }}</div>
-    <div class="text-xs text-slate-500 mt-0.5">Listos para exportar a CONTPAQi</div>
+    <div class="text-xs text-blue-600 mt-0.5">Asientos contables listos</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm">
+    <div class="text-[11px] uppercase text-slate-400 font-semibold tracking-wider">Pendientes de Clasificar</div>
+    <div class="text-2xl font-bold text-slate-700 mt-1">{{ resumen.pendientes or 0 }}</div>
+    <div class="text-xs text-slate-500 mt-0.5">Esperando contra-cuenta</div>
   </div>
 </div>
 
 <!-- BARRA DE FILTROS Y BÚSQUEDA -->
 <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm mb-6">
-  <form method="get" action="/empresas/{{ eid }}/movimientos" class="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+  <form method="get" action="/empresas/{{ eid }}/movimientos" class="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
     <div class="md:col-span-2">
       <label class="block text-xs font-semibold text-slate-600 mb-1">Buscar por texto, RFC, Factura o Referencia</label>
-      <input type="text" name="buscar" value="{{ buscar }}" placeholder="Ej. Amazon, NOMINA, F-123, MOT021..."
+      <input type="text" name="buscar" value="{{ buscar }}" placeholder="Ej. Banorte, Amazon, NOMINA, F-123..."
              class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-orange-500 focus:outline-none">
     </div>
     <div>
-      <label class="block text-xs font-semibold text-slate-600 mb-1">Tipo</label>
+      <label class="block text-xs font-semibold text-slate-600 mb-1">Tipo de Movimiento</label>
       <select name="tipo" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-orange-500 focus:outline-none">
         <option value="">Todos los tipos</option>
         <option value="ingreso" {% if tipo == 'ingreso' %}selected{% endif %}>Ingresos (+)</option>
         <option value="egreso" {% if tipo == 'egreso' %}selected{% endif %}>Egresos (-)</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs font-semibold text-slate-600 mb-1">Cobertura de Facturas</label>
+      <select name="cobertura" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-orange-500 focus:outline-none">
+        <option value="">Todas las coberturas</option>
+        <option value="cubierto_100" {% if cobertura == 'cubierto_100' %}selected{% endif %}>✓ Cubierto 100%</option>
+        <option value="parcial" {% if cobertura == 'parcial' %}selected{% endif %}>⚠ Parcial (Incompleto)</option>
+        <option value="sobrepasa" {% if cobertura == 'sobrepasa' %}selected{% endif %}>ℹ Sobrepasa movimiento</option>
+        <option value="sin_facturas" {% if cobertura == 'sin_facturas' %}selected{% endif %}>❌ Sin facturas XML</option>
       </select>
     </div>
     <div>
@@ -74,7 +103,7 @@
       <button type="submit" class="w-full bg-naranja-500 hover:bg-naranja-600 text-white font-bold py-2 px-4 rounded-lg text-xs shadow-sm transition-colors">
         🔍 Filtrar
       </button>
-      {% if buscar or tipo or doc_id or estado %}
+      {% if buscar or tipo or doc_id or estado or cobertura %}
       <a href="/empresas/{{ eid }}/movimientos" class="bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold py-2 px-3 rounded-lg text-xs transition-colors" title="Limpiar filtros">
         ✕
       </a>
@@ -83,80 +112,80 @@
   </form>
 </div>
 
-<!-- TABLA DE MOVIMIENTOS -->
+<!-- TABLA PRINCIPAL DE MOVIMIENTOS -->
 <div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm mb-6">
   <div class="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
-    <div class="text-sm font-bold text-marino-900">
-      Movimientos Mostrados ({{ movimientos|length }} de {{ total_movimientos }})
+    <div class="text-sm font-bold text-marino-900 flex items-center gap-2">
+      <span>Movimientos Bancarios</span>
+      <span class="text-xs font-normal text-slate-500">({{ movimientos|length }} de {{ total_movimientos }})</span>
     </div>
     <div class="text-xs text-slate-500">
       Página {{ pagina }} de {{ total_paginas }}
     </div>
   </div>
+
   {% if movimientos %}
   <div class="overflow-x-auto">
     <table class="w-full text-xs">
       <thead>
         <tr class="text-left text-slate-600 bg-slate-50 border-b border-slate-200 uppercase tracking-wider text-[11px]">
-          <th class="px-4 py-3 font-semibold">Fecha</th>
-          <th class="px-3 py-3 font-semibold">Tipo</th>
-          <th class="px-4 py-3 font-semibold">Concepto / Descripción</th>
-          <th class="px-4 py-3 font-semibold">RFC Contraparte</th>
-          <th class="px-4 py-3 font-semibold">Factura(s) / Folio</th>
-          <th class="px-4 py-3 font-semibold text-right">Importe</th>
-          <th class="px-4 py-3 font-semibold">XML Asociado</th>
-          <th class="px-3 py-3 font-semibold">Póliza</th>
-          <th class="px-4 py-3 font-semibold text-right">Acciones</th>
+          <th class="px-3.5 py-3 font-semibold">Fecha / Tipo</th>
+          <th class="px-3.5 py-3 font-semibold">Concepto / RFC</th>
+          <th class="px-3.5 py-3 font-semibold text-right">Monto Mov.</th>
+          <th class="px-3.5 py-3 font-semibold">Facturas XML</th>
+          <th class="px-3.5 py-3 font-semibold">Cobertura de Facturas</th>
+          <th class="px-3.5 py-3 font-semibold">Asiento Contable (Cuentas y Nombres)</th>
+          <th class="px-3.5 py-3 font-semibold text-right">Acciones</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
         {% for m in movimientos %}
         <tr class="hover:bg-slate-50/80 transition-colors" id="fila-mov-{{ m.id }}">
-          <td class="px-4 py-3 whitespace-nowrap font-mono text-slate-700">
-            {{ m.fecha }}
-          </td>
-          <td class="px-3 py-3 whitespace-nowrap">
+          <!-- FECHA Y TIPO -->
+          <td class="px-3.5 py-3 whitespace-nowrap">
+            <div class="font-mono text-slate-800 font-semibold">{{ m.fecha }}</div>
             {% if m.tipo == 'ingreso' %}
-            <span class="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded font-semibold text-[10px]">
-              INGRESO
+            <span class="inline-block mt-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.2 rounded font-semibold text-[10px]">
+              INGRESO (+)
             </span>
             {% else %}
-            <span class="bg-rose-50 text-rose-700 border border-rose-200 px-2 py-0.5 rounded font-semibold text-[10px]">
-              EGRESO
+            <span class="inline-block mt-0.5 bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.2 rounded font-semibold text-[10px]">
+              EGRESO (-)
             </span>
             {% endif %}
           </td>
-          <td class="px-4 py-3 font-medium text-slate-800 max-w-xs truncate" title="{{ m.descripcion }}">
-            {{ m.descripcion }}
-            {% if m.referencia_bancaria %}
-            <div class="text-[10px] text-slate-400 font-mono">Ref: {{ m.referencia_bancaria }}</div>
-            {% endif %}
+
+          <!-- CONCEPTO Y RFC -->
+          <td class="px-3.5 py-3 max-w-xs">
+            <div class="font-medium text-slate-900 truncate" title="{{ m.descripcion }}">
+              {{ m.descripcion }}
+            </div>
+            <div class="text-[11px] text-slate-500 font-mono mt-0.5 flex items-center gap-2">
+              {% if m.rfc_contraparte %}
+              <span class="text-slate-700 font-bold bg-slate-100 px-1 rounded">{{ m.rfc_contraparte }}</span>
+              {% else %}
+              <span class="text-slate-400 italic">Sin RFC</span>
+              {% endif %}
+              {% if m.referencia_bancaria %}
+              <span class="text-slate-400">Ref: {{ m.referencia_bancaria }}</span>
+              {% endif %}
+            </div>
           </td>
-          <td class="px-4 py-3 whitespace-nowrap font-mono">
-            {% if m.rfc_contraparte %}
-            <span class="text-slate-800 font-semibold">{{ m.rfc_contraparte }}</span>
-            {% else %}
-            <span class="text-slate-400 italic">Sin RFC</span>
-            {% endif %}
-          </td>
-          <td class="px-4 py-3 font-mono text-slate-700 max-w-xs truncate" title="{{ m.numero_factura or '' }}">
-            {% if m.numero_factura %}
-            <span class="bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded font-semibold">{{ m.numero_factura }}</span>
-            {% else %}
-            <span class="text-slate-300">-</span>
-            {% endif %}
-          </td>
-          <td class="px-4 py-3 whitespace-nowrap text-right font-mono font-bold text-slate-900">
+
+          <!-- TOTAL MOVIMIENTO -->
+          <td class="px-3.5 py-3 whitespace-nowrap text-right font-mono font-bold text-slate-900 text-sm">
             ${{ "%.2f"|format(m.total) }}
           </td>
-          <td class="px-4 py-3">
+
+          <!-- FACTURAS XML ASOCIADAS -->
+          <td class="px-3.5 py-3">
             {% if m.facturas_cfdi %}
             <div class="flex items-center gap-1.5 flex-wrap">
               <span class="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded font-mono font-bold text-[11px]" title="CFDIs vinculados">
                 {{ m.facturas_cfdi }}
               </span>
               <button onclick="abrirModalAsociar({{ m.id }}, '{{ m.tipo }}', '{{ m.rfc_contraparte or '' }}', {{ m.total }}, '{{ m.descripcion|escape }}')"
-                      class="text-[10px] text-slate-500 hover:text-emerald-700 underline font-semibold" title="Editar o agregar facturas XML">
+                      class="text-[10px] text-emerald-700 hover:text-emerald-900 underline font-semibold" title="Editar o agregar facturas XML">
                 Modificar
               </button>
             </div>
@@ -167,20 +196,73 @@
             </button>
             {% endif %}
           </td>
-          <td class="px-3 py-3 whitespace-nowrap">
-            {% if m.poliza_id %}
-            <span class="text-blue-700 font-bold bg-blue-50 border border-blue-200 px-2 py-0.5 rounded text-[10px]">
-              #{{ m.poliza_numero }} ({{ m.poliza_tipo|upper }})
-            </span>
+
+          <!-- COBERTURA DE FACTURAS (REQ: CUBREN O NO EL MONTO) -->
+          <td class="px-3.5 py-3 whitespace-nowrap">
+            <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold {{ m.cobertura_color }}">
+              <span>{{ m.cobertura_icono }}</span>
+              <div>
+                <div class="font-bold text-[11px] leading-tight">{{ m.cobertura_texto }}</div>
+                <div class="text-[10px] opacity-80 leading-tight font-mono">{{ m.cobertura_detalle }}</div>
+              </div>
+            </div>
+          </td>
+
+          <!-- ASIENTO CONTABLE: CUENTAS, NOMBRES Y NATURALEZA (REQ: VER Y EDITAR ASIENTO) -->
+          <td class="px-3.5 py-3 max-w-sm">
+            {% if m.lineas_asiento %}
+            <div class="space-y-1 bg-slate-50/70 p-2 rounded-lg border border-slate-200 text-[11px]">
+              {% for l in m.lineas_asiento %}
+              <div class="flex items-center justify-between gap-2">
+                <div class="truncate" title="{{ l.cuenta }} - {{ l.nombre_cuenta }}">
+                  <span class="font-mono font-bold text-slate-800">{{ l.cuenta }}</span>
+                  <span class="text-slate-600 font-medium ml-1 text-[10px]">{{ l.nombre_cuenta }}</span>
+                </div>
+                <div class="whitespace-nowrap font-mono text-[10px]">
+                  {% if l.naturaleza == 'cargo' %}
+                  <span class="text-emerald-700 bg-emerald-50 px-1 rounded font-bold">D: ${{ "%.2f"|format(l.importe) }}</span>
+                  {% else %}
+                  <span class="text-blue-700 bg-blue-50 px-1 rounded font-bold">H: ${{ "%.2f"|format(l.importe) }}</span>
+                  {% endif %}
+                </div>
+              </div>
+              {% endfor %}
+            </div>
+            <div class="flex items-center justify-between mt-1 text-[10px]">
+              <span class="text-blue-700 font-semibold">
+                Póliza #{{ m.poliza_numero or 'S/N' }} ({{ (m.poliza_tipo or m.tipo)|upper }})
+                {% if m.poliza_cuadrada %}
+                <span class="text-emerald-600 font-bold ml-1">✓ Cuadrada</span>
+                {% else %}
+                <span class="text-rose-600 font-bold ml-1">⚠ Descuadrada</span>
+                {% endif %}
+              </span>
+            </div>
             {% else %}
-            <span class="text-slate-400 text-[10px]">Sin póliza</span>
+            <div class="text-[11px] text-slate-400 italic bg-slate-50 p-2 rounded border border-dashed border-slate-200">
+              Sin asiento contable generado todavía.
+            </div>
             {% endif %}
           </td>
-          <td class="px-4 py-3 whitespace-nowrap text-right">
-            <button onclick="abrirModalEditar({{ m.id }}, '{{ m.fecha }}', '{{ m.tipo }}', {{ m.total }}, '{{ m.descripcion|escape }}', '{{ m.rfc_contraparte or '' }}', '{{ m.referencia_bancaria or '' }}', '{{ m.numero_factura or '' }}')"
-                    class="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-semibold text-xs transition-colors">
-              ✏️ Editar
-            </button>
+
+          <!-- ACCIONES -->
+          <td class="px-3.5 py-3 whitespace-nowrap text-right space-y-1">
+            <div>
+              <button onclick="abrirModalAsiento({{ m.id }})"
+                      class="w-full px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-[11px] shadow-sm flex items-center justify-center gap-1 transition-colors">
+                <span>📋</span> Ver / Editar Asiento
+              </button>
+            </div>
+            <div class="flex items-center justify-end gap-1">
+              <button onclick="abrirModalAsociar({{ m.id }}, '{{ m.tipo }}', '{{ m.rfc_contraparte or '' }}', {{ m.total }}, '{{ m.descripcion|escape }}')"
+                      class="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-semibold text-[10px]" title="Vincular XML">
+                XML
+              </button>
+              <button onclick="abrirModalEditar({{ m.id }}, '{{ m.fecha }}', '{{ m.tipo }}', {{ m.total }}, '{{ m.descripcion|escape }}', '{{ m.rfc_contraparte or '' }}', '{{ m.referencia_bancaria or '' }}', '{{ m.numero_factura or '' }}')"
+                      class="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-semibold text-[10px]" title="Editar datos">
+                ✏️ Datos
+              </button>
+            </div>
           </td>
         </tr>
         {% endfor %}
@@ -196,13 +278,13 @@
     </div>
     <div class="flex items-center gap-1">
       {% if pagina > 1 %}
-      <a href="/empresas/{{ eid }}/movimientos?pagina={{ pagina - 1 }}&buscar={{ buscar }}&tipo={{ tipo }}&documento_id={{ doc_id }}&estado={{ estado }}"
+      <a href="/empresas/{{ eid }}/movimientos?pagina={{ pagina - 1 }}&buscar={{ buscar }}&tipo={{ tipo }}&cobertura={{ cobertura }}&documento_id={{ doc_id }}&estado={{ estado }}"
          class="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-semibold">
         ← Anterior
       </a>
       {% endif %}
       {% if pagina < total_paginas %}
-      <a href="/empresas/{{ eid }}/movimientos?pagina={{ pagina + 1 }}&buscar={{ buscar }}&tipo={{ tipo }}&documento_id={{ doc_id }}&estado={{ estado }}"
+      <a href="/empresas/{{ eid }}/movimientos?pagina={{ pagina + 1 }}&buscar={{ buscar }}&tipo={{ tipo }}&cobertura={{ cobertura }}&documento_id={{ doc_id }}&estado={{ estado }}"
          class="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-semibold">
         Siguiente →
       </a>
@@ -213,17 +295,192 @@
 
   {% else %}
   <div class="text-center py-12 text-slate-400 text-sm">
-    No se encontraron movimientos con los filtros especificados.
+    No se encontraron movimientos con los filtros seleccionados.
   </div>
   {% endif %}
 </div>
 
-<!-- MODAL PARA EDITAR MOVIMIENTO -->
+<!-- ========================================================================= -->
+<!-- MODAL: VER Y EDITAR ASIENTO CONTABLE (COMPLETO CON CUENTAS, NOMBRES Y LIVE CHECK) -->
+<!-- ========================================================================= -->
+<div id="modal-asiento-contable" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[92vh]">
+    <!-- CABECERA -->
+    <div class="px-6 py-4 bg-marino-900 text-white flex items-center justify-between">
+      <div>
+        <h3 class="font-bold text-base flex items-center gap-2">
+          <span>📋</span> Asiento Contable del Movimiento
+        </h3>
+        <p class="text-xs text-slate-300 mt-0.5" id="asiento-modal-subtitulo">
+          Cargando datos del movimiento...
+        </p>
+      </div>
+      <button type="button" onclick="cerrarModalAsiento()" class="text-slate-400 hover:text-white text-lg">✕</button>
+    </div>
+
+    <!-- CUERPO CON EDICIÓN DE CONCEPTO Y TABLA DE LÍNEAS -->
+    <div class="p-6 overflow-y-auto space-y-4 flex-1">
+      <input type="hidden" id="asiento-mov-id">
+      
+      <div>
+        <label class="block text-xs font-bold text-slate-700 mb-1">Concepto General de la Póliza</label>
+        <input type="text" id="asiento-concepto"
+               placeholder="Concepto de la póliza contable..."
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none">
+      </div>
+
+      <!-- TABLA DINÁMICA DE LÍNEAS CONTABLES -->
+      <div class="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+        <div class="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+          <span class="text-xs font-bold text-slate-700 uppercase tracking-wider">Líneas del Asiento</span>
+          <div class="flex items-center gap-2">
+            <button type="button" onclick="autoCuadrarAsiento()"
+                    class="text-xs bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold px-3 py-1 rounded transition-colors"
+                    title="Ajusta o agrega automáticamente una línea para cuadrar a cero la diferencia">
+              ⚖️ Auto-cuadrar
+            </button>
+            <button type="button" onclick="agregarFilaAsiento()"
+                    class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-bold px-3 py-1 rounded shadow-sm transition-colors">
+              ➕ Agregar Línea
+            </button>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="text-left text-slate-600 bg-slate-100/70 border-b border-slate-200 uppercase tracking-wider text-[11px]">
+                <th class="px-3 py-2 font-semibold w-40">Cuenta Contable</th>
+                <th class="px-3 py-2 font-semibold">Nombre de la Cuenta (Catálogo)</th>
+                <th class="px-3 py-2 font-semibold">Concepto / Referencia</th>
+                <th class="px-3 py-2 font-semibold text-right w-28">Debe (Cargo)</th>
+                <th class="px-3 py-2 font-semibold text-right w-28">Haber (Abono)</th>
+                <th class="px-2 py-2 text-center w-12">Acción</th>
+              </tr>
+            </thead>
+            <tbody id="asiento-filas-tbody" class="divide-y divide-slate-100">
+              <!-- Se llena dinámicamente -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- BARRA DE SUMAS Y CUADRE EN TIEMPO REAL -->
+    <div class="px-6 py-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-4 text-xs">
+        <div>
+          <span class="text-slate-500">Total Cargos (Debe):</span>
+          <strong class="font-mono text-emerald-700 text-sm ml-1" id="asiento-total-cargos">$0.00</strong>
+        </div>
+        <div>
+          <span class="text-slate-500">Total Abonos (Haber):</span>
+          <strong class="font-mono text-blue-700 text-sm ml-1" id="asiento-total-abonos">$0.00</strong>
+        </div>
+        <div>
+          <span class="text-slate-500">Diferencia:</span>
+          <strong class="font-mono text-sm ml-1" id="asiento-diferencia">$0.00</strong>
+        </div>
+        <div id="asiento-badge-cuadre" class="px-2.5 py-0.5 rounded font-bold text-xs">
+          <!-- Badge de Cuadre -->
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <button type="button" onclick="cerrarModalAsiento()"
+                class="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-100">
+          Cancelar
+        </button>
+        <button type="button" onclick="guardarAsientoContable()" id="btn-guardar-asiento"
+                class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm transition-colors">
+          💾 Guardar Asiento Contable
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- MODAL: ASOCIAR FACTURAS XML Y ASIGNAR CONTRA-CUENTA (SIN SALTAR CIEGAMENTE) -->
+<!-- ========================================================================= -->
+<div id="modal-asociar-cfdi" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[92vh]">
+    <div class="px-6 py-4 bg-marino-900 text-white flex items-center justify-between">
+      <div>
+        <h3 class="font-bold text-base flex items-center gap-2">
+          <span>🔍</span> Vincular Facturas XML (CFDI) al Movimiento
+        </h3>
+        <p class="text-xs text-slate-300 mt-0.5" id="asoc-mov-info">
+          Movimiento: Cargando...
+        </p>
+      </div>
+      <button type="button" onclick="cerrarModalAsociar()" class="text-slate-400 hover:text-white text-lg">✕</button>
+    </div>
+
+    <!-- CAMPO DE CONTRA-CUENTA CONTABLE (REQ: NO SALTAR SIN DEJAR ASIGNARLA) -->
+    <div class="p-4 bg-amber-50/70 border-b border-amber-200">
+      <div class="flex items-center justify-between mb-1">
+        <label class="block text-xs font-bold text-amber-900">
+          Contra-cuenta Contable (Cliente / Proveedor / Gasto):
+        </label>
+        <span id="asoc-cuenta-sugerida-badge" class="text-[10px] text-amber-700 font-semibold hidden">
+          💡 Sugerida automáticamente por RFC / Nombre
+        </span>
+      </div>
+      <div class="relative">
+        <input type="text" id="asoc-contra-cuenta" list="cuentas-catalogo"
+               placeholder="Escribe o selecciona la cuenta del catálogo (ej. 20101005 Proveedor ABC)..."
+               class="w-full border border-amber-300 rounded-lg px-3 py-2 text-xs font-mono bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none">
+      </div>
+      <p class="text-[10px] text-amber-800 mt-1">
+        Al seleccionar una factura, el sistema buscará la cuenta en el catálogo. Si aún no decides la cuenta, déjala vacía y el movimiento permanecerá en revisión para que lo captures después sin cerrarse en falso.
+      </p>
+    </div>
+
+    <div class="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-3">
+      <div class="flex-1 relative">
+        <input type="text" id="asoc-buscar" oninput="buscarCfdisDebounced()"
+               placeholder="Buscar por Folio (ej. 1692), Serie, UUID, RFC o Proveedor/Cliente..."
+               class="w-full border border-slate-300 rounded-lg pl-8 pr-3 py-2 text-xs focus:ring-2 focus:ring-orange-500 focus:outline-none">
+        <span class="absolute left-2.5 top-2 text-slate-400 text-xs">🔍</span>
+      </div>
+      <button type="button" onclick="cargarCfdisParaAsociar()" class="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold">
+        Buscar
+      </button>
+    </div>
+
+    <!-- LISTA DE XMLS -->
+    <div class="flex-1 overflow-y-auto p-4 space-y-2" id="asoc-contenedor-cfdis">
+      <div class="text-center py-8 text-slate-400 text-xs">Cargando facturas XML disponibles...</div>
+    </div>
+
+    <div class="px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+      <div class="text-xs text-slate-500" id="asoc-contador-seleccion">
+        0 factura(s) seleccionada(s)
+      </div>
+      <div class="flex items-center gap-2">
+        <button type="button" onclick="desasociarTodas()" id="btn-desasociar" class="px-3 py-2 border border-rose-300 text-rose-700 hover:bg-rose-50 text-xs font-semibold rounded-lg hidden">
+          Quitar Asociación Actual
+        </button>
+        <button type="button" onclick="cerrarModalAsociar()" class="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-100">
+          Cancelar
+        </button>
+        <button type="button" onclick="confirmarAsociacion()" id="btn-confirmar-asoc" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm">
+          ✅ Asociar y Guardar
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- MODAL: EDITAR DATOS DEL MOVIMIENTO (FECHA, TOTAL, RFC, FACTURA) -->
+<!-- ========================================================================= -->
 <div id="modal-editar-mov" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
     <div class="px-6 py-4 bg-marino-900 text-white flex items-center justify-between">
       <div>
-        <h3 class="font-bold text-base">Editar Movimiento Bancario</h3>
+        <h3 class="font-bold text-base">Editar Datos del Movimiento</h3>
         <p class="text-xs text-slate-300 mt-0.5">Corrige fecha, concepto, RFC, tipo, importe o número de factura</p>
       </div>
       <button type="button" onclick="cerrarModalEditar()" class="text-slate-400 hover:text-white text-lg">✕</button>
@@ -279,58 +536,9 @@
   </div>
 </div>
 
-<!-- MODAL PARA ASOCIAR FACTURAS XML (CFDI) -->
-<div id="modal-asociar-cfdi" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden items-center justify-center p-4">
-  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[90vh]">
-    <div class="px-6 py-4 bg-marino-900 text-white flex items-center justify-between">
-      <div>
-        <h3 class="font-bold text-base flex items-center gap-2">
-          <span>🔍</span> Vincular Facturas XML (CFDI) al Movimiento
-        </h3>
-        <p class="text-xs text-slate-300 mt-0.5" id="asoc-mov-info">
-          Movimiento: Cargando...
-        </p>
-      </div>
-      <button type="button" onclick="cerrarModalAsociar()" class="text-slate-400 hover:text-white text-lg">✕</button>
-    </div>
-
-    <div class="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-3">
-      <div class="flex-1 relative">
-        <input type="text" id="asoc-buscar" oninput="buscarCfdisDebounced()"
-               placeholder="Buscar por Folio (ej. 1692), Serie, UUID, RFC o Proveedor/Cliente..."
-               class="w-full border border-slate-300 rounded-lg pl-8 pr-3 py-2 text-xs focus:ring-2 focus:ring-orange-500 focus:outline-none">
-        <span class="absolute left-2.5 top-2 text-slate-400 text-xs">🔍</span>
-      </div>
-      <button type="button" onclick="cargarCfdisParaAsociar()" class="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold">
-        Actualizar
-      </button>
-    </div>
-
-    <!-- LISTA DE XMLS -->
-    <div class="flex-1 overflow-y-auto p-4 space-y-2" id="asoc-contenedor-cfdis">
-      <div class="text-center py-8 text-slate-400 text-xs">Cargando facturas XML disponibles...</div>
-    </div>
-
-    <div class="px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
-      <div class="text-xs text-slate-500" id="asoc-contador-seleccion">
-        0 factura(s) seleccionada(s)
-      </div>
-      <div class="flex items-center gap-2">
-        <button type="button" onclick="desasociarTodas()" id="btn-desasociar" class="px-3 py-2 border border-rose-300 text-rose-700 hover:bg-rose-50 text-xs font-semibold rounded-lg hidden">
-          Quitar Asociación Actual
-        </button>
-        <button type="button" onclick="cerrarModalAsociar()" class="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-100">
-          Cancelar
-        </button>
-        <button type="button" onclick="confirmarAsociacion()" id="btn-confirmar-asoc" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm">
-          ✅ Asociar Seleccionadas
-        </button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- MODAL PARA VER DETALLE COMPLETO DE UN CFDI -->
+<!-- ========================================================================= -->
+<!-- MODAL: DETALLE DEL CFDI -->
+<!-- ========================================================================= -->
 <div id="modal-detalle-xml" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
     <div class="px-6 py-4 bg-slate-800 text-white flex items-center justify-between">
@@ -350,6 +558,458 @@ let movActualId = null;
 let cfdisCargados = [];
 let debounceTimer = null;
 
+// Mapa local del catálogo de cuentas para resolución instantánea de nombres
+const catalogoMap = {};
+{% for c in cuentas %}
+catalogoMap["{{ c.cuenta }}"] = "{{ c.descripcion|escape }}";
+catalogoMap["{{ c.cuenta.replace('-', '') }}"] = "{{ c.descripcion|escape }}";
+{% endfor %}
+
+function buscarNombreEnCatalogo(cuentaStr) {
+    if (!cuentaStr) return "";
+    let limpia = cuentaStr.trim().split(" - ")[0].split(" ")[0].trim();
+    if (catalogoMap[limpia]) return catalogoMap[limpia];
+    let sinGuiones = limpia.replace(/-/g, '').replace(/\./g, '');
+    if (catalogoMap[sinGuiones]) return catalogoMap[sinGuiones];
+    return "";
+}
+
+// --------------------------------------------------------------------------
+// LÓGICA DE ASIENTO CONTABLE (VER / EDITAR / GUARDAR / AUTO-CUADRE)
+// --------------------------------------------------------------------------
+async function abrirModalAsiento(movId) {
+    document.getElementById('asiento-mov-id').value = movId;
+    document.getElementById('asiento-modal-subtitulo').innerText = `Cargando datos del movimiento #${movId}...`;
+    document.getElementById('asiento-filas-tbody').innerHTML = '<tr><td colspan="6" class="text-center py-8 text-slate-400 text-xs">Cargando asiento contable...</td></tr>';
+    
+    const m = document.getElementById('modal-asiento-contable');
+    m.classList.remove('hidden');
+    m.classList.add('flex');
+
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/movimientos/${movId}/asiento-json`);
+        const data = await resp.json();
+        if (!data.ok) {
+            alert("Error al cargar asiento: " + (data.error || "No encontrado"));
+            cerrarModalAsiento();
+            return;
+        }
+
+        const mov = data.movimiento;
+        document.getElementById('asiento-modal-subtitulo').innerText = 
+            `Movimiento #${mov.id} (${mov.tipo.toUpperCase()} $${mov.total.toFixed(2)}) · Fecha: ${mov.fecha} · ${mov.descripcion}`;
+        document.getElementById('asiento-concepto').value = data.concepto || mov.descripcion || '';
+
+        renderizarLineasAsiento(data.lineas || []);
+    } catch(e) {
+        alert("Error de conexión al cargar el asiento contable.");
+        cerrarModalAsiento();
+    }
+}
+
+function cerrarModalAsiento() {
+    const m = document.getElementById('modal-asiento-contable');
+    m.classList.add('hidden');
+    m.classList.remove('flex');
+}
+
+function renderizarLineasAsiento(lineas) {
+    const tbody = document.getElementById('asiento-filas-tbody');
+    tbody.innerHTML = '';
+
+    if (lineas.length === 0) {
+        agregarFilaAsiento();
+        agregarFilaAsiento();
+        return;
+    }
+
+    lineas.forEach(l => {
+        agregarFilaAsiento(l.cuenta, l.nombre_cuenta, l.descripcion, l.cargo, l.abono);
+    });
+
+    recalcularTotalesAsiento();
+}
+
+function agregarFilaAsiento(cuenta = '', nombre = '', desc = '', cargo = 0, abono = 0) {
+    const tbody = document.getElementById('asiento-filas-tbody');
+    const tr = document.createElement('tr');
+    tr.className = "hover:bg-slate-50/80 transition-colors fila-asiento";
+    
+    const nomCalculado = nombre || buscarNombreEnCatalogo(cuenta) || 'Cuenta no catalogada';
+
+    tr.innerHTML = `
+      <td class="px-3 py-2">
+        <input type="text" list="cuentas-catalogo" value="${cuenta}"
+               placeholder="No. Cuenta"
+               oninput="actualizarNombreCuentaFila(this)"
+               class="input-cuenta w-full border border-slate-300 rounded px-2 py-1 text-xs font-mono font-bold focus:ring-1 focus:ring-blue-500 focus:outline-none">
+      </td>
+      <td class="px-3 py-2">
+        <span class="span-nombre-cuenta text-slate-700 font-medium text-xs truncate block max-w-xs" title="${nomCalculado}">
+          ${nomCalculado}
+        </span>
+      </td>
+      <td class="px-3 py-2">
+        <input type="text" value="${desc || ''}"
+               placeholder="Concepto o folio..."
+               class="input-desc w-full border border-slate-300 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 focus:outline-none">
+      </td>
+      <td class="px-3 py-2 text-right">
+        <input type="number" step="0.01" min="0" value="${cargo > 0 ? cargo.toFixed(2) : ''}"
+               placeholder="0.00"
+               oninput="onCargoAbonoInput(this, 'cargo')"
+               class="input-cargo w-full border border-slate-300 rounded px-2 py-1 text-xs font-mono font-bold text-right text-emerald-700 focus:ring-1 focus:ring-emerald-500 focus:outline-none">
+      </td>
+      <td class="px-3 py-2 text-right">
+        <input type="number" step="0.01" min="0" value="${abono > 0 ? abono.toFixed(2) : ''}"
+               placeholder="0.00"
+               oninput="onCargoAbonoInput(this, 'abono')"
+               class="input-abono w-full border border-slate-300 rounded px-2 py-1 text-xs font-mono font-bold text-right text-blue-700 focus:ring-1 focus:ring-blue-500 focus:outline-none">
+      </td>
+      <td class="px-2 py-2 text-center">
+        <button type="button" onclick="eliminarFilaAsiento(this)" class="text-rose-500 hover:text-rose-700 font-bold text-sm" title="Eliminar fila">
+          ✕
+        </button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+    recalcularTotalesAsiento();
+}
+
+function onCargoAbonoInput(inputElem, tipo) {
+    const tr = inputElem.closest('tr');
+    if (tipo === 'cargo' && parseFloat(inputElem.value) > 0) {
+        tr.querySelector('.input-abono').value = '';
+    } else if (tipo === 'abono' && parseFloat(inputElem.value) > 0) {
+        tr.querySelector('.input-cargo').value = '';
+    }
+    recalcularTotalesAsiento();
+}
+
+function actualizarNombreCuentaFila(inputCuenta) {
+    const tr = inputCuenta.closest('tr');
+    const span = tr.querySelector('.span-nombre-cuenta');
+    const valor = inputCuenta.value.trim();
+    const nom = buscarNombreEnCatalogo(valor);
+    span.innerText = nom || (valor ? 'Buscando en catálogo...' : 'Sin cuenta seleccionada');
+    span.title = span.innerText;
+}
+
+function eliminarFilaAsiento(btn) {
+    const tr = btn.closest('tr');
+    const tbody = tr.parentElement;
+    if (tbody.children.length <= 2) {
+        alert("El asiento debe tener al menos dos líneas contables.");
+        return;
+    }
+    tr.remove();
+    recalcularTotalesAsiento();
+}
+
+function recalcularTotalesAsiento() {
+    let cargos = 0;
+    let abonos = 0;
+
+    document.querySelectorAll('.fila-asiento').forEach(tr => {
+        const cVal = parseFloat(tr.querySelector('.input-cargo').value) || 0;
+        const aVal = parseFloat(tr.querySelector('.input-abono').value) || 0;
+        cargos += cVal;
+        abonos += aVal;
+    });
+
+    cargos = Math.round(cargos * 100) / 100;
+    abonos = Math.round(abonos * 100) / 100;
+    const diff = Math.round(Math.abs(cargos - abonos) * 100) / 100;
+
+    document.getElementById('asiento-total-cargos').innerText = `$${cargos.toFixed(2)}`;
+    document.getElementById('asiento-total-abonos').innerText = `$${abonos.toFixed(2)}`;
+    document.getElementById('asiento-diferencia').innerText = `$${diff.toFixed(2)}`;
+
+    const badge = document.getElementById('asiento-badge-cuadre');
+    const btnGuardar = document.getElementById('btn-guardar-asiento');
+
+    if (diff <= 0.05 && cargos > 0) {
+        badge.className = "px-2.5 py-1 rounded-lg font-bold text-xs bg-emerald-100 text-emerald-800 border border-emerald-300";
+        badge.innerText = "✓ Asiento Cuadrado";
+        btnGuardar.classList.remove('opacity-50');
+    } else {
+        badge.className = "px-2.5 py-1 rounded-lg font-bold text-xs bg-rose-100 text-rose-800 border border-rose-300";
+        badge.innerText = `⚠ Descuadrado ($${diff.toFixed(2)})`;
+    }
+}
+
+function autoCuadrarAsiento() {
+    let cargos = 0;
+    let abonos = 0;
+
+    document.querySelectorAll('.fila-asiento').forEach(tr => {
+        cargos += parseFloat(tr.querySelector('.input-cargo').value) || 0;
+        abonos += parseFloat(tr.querySelector('.input-abono').value) || 0;
+    });
+
+    cargos = Math.round(cargos * 100) / 100;
+    abonos = Math.round(abonos * 100) / 100;
+    const diff = Math.round(Math.abs(cargos - abonos) * 100) / 100;
+
+    if (diff === 0) {
+        alert("El asiento ya está perfectamente cuadrado.");
+        return;
+    }
+
+    if (cargos > abonos) {
+        // Falta abono
+        agregarFilaAsiento('', '', 'Ajuste de cuadre', 0, diff);
+    } else {
+        // Falta cargo
+        agregarFilaAsiento('', '', 'Ajuste de cuadre', diff, 0);
+    }
+}
+
+async function guardarAsientoContable() {
+    const movId = document.getElementById('asiento-mov-id').value;
+    const concepto = document.getElementById('asiento-concepto').value.trim();
+    const filas = document.querySelectorAll('.fila-asiento');
+
+    const lineas = [];
+    filas.forEach(tr => {
+        const ctaRaw = tr.querySelector('.input-cuenta').value.trim();
+        const desc = tr.querySelector('.input-desc').value.trim();
+        const cargo = parseFloat(tr.querySelector('.input-cargo').value) || 0;
+        const abono = parseFloat(tr.querySelector('.input-abono').value) || 0;
+
+        if (ctaRaw && (cargo > 0 || abono > 0)) {
+            lineas.push({
+                cuenta: ctaRaw.split(" - ")[0].split(" ")[0].trim(),
+                cargo: cargo,
+                abono: abono,
+                descripcion: desc
+            });
+        }
+    });
+
+    if (lineas.length < 2) {
+        alert("Captura al menos dos cuentas con sus respectivos importes.");
+        return;
+    }
+
+    let totC = lineas.reduce((acc, l) => acc + l.cargo, 0);
+    let totA = lineas.reduce((acc, l) => acc + l.abono, 0);
+    if (Math.abs(totC - totA) > 0.05) {
+        alert(`El asiento está descuadrado: Cargos $${totC.toFixed(2)} vs Abonos $${totA.toFixed(2)}. Usa 'Auto-cuadrar' antes de guardar.`);
+        return;
+    }
+
+    const btnGuardar = document.getElementById('btn-guardar-asiento');
+    btnGuardar.disabled = true;
+    btnGuardar.innerText = "Guardando...";
+
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/movimientos/${movId}/guardar-asiento`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify({
+                lineas: lineas,
+                concepto: concepto
+            })
+        });
+        const res = await resp.json();
+        if (res.ok) {
+            cerrarModalAsiento();
+            window.location.reload();
+        } else {
+            alert("Error al guardar asiento: " + (res.error || "Datos inválidos."));
+            btnGuardar.disabled = false;
+            btnGuardar.innerText = "💾 Guardar Asiento Contable";
+        }
+    } catch(e) {
+        alert("Error de conexión al guardar el asiento.");
+        btnGuardar.disabled = false;
+        btnGuardar.innerText = "💾 Guardar Asiento Contable";
+    }
+}
+
+// --------------------------------------------------------------------------
+// LÓGICA DE ASOCIACIÓN DE FACTURAS XML Y ASIGNACIÓN DE CONTRA-CUENTA
+// --------------------------------------------------------------------------
+function abrirModalAsociar(id, tipo, rfc, total, desc) {
+    movActualId = id;
+    document.getElementById('asoc-mov-info').innerText = `Movimiento #${id} (${tipo.toUpperCase()} $${total.toFixed(2)}) · ${rfc ? 'RFC: ' + rfc : 'Sin RFC'} · ${desc}`;
+    document.getElementById('asoc-buscar').value = rfc || '';
+    document.getElementById('asoc-contra-cuenta').value = '';
+    document.getElementById('asoc-cuenta-sugerida-badge').classList.add('hidden');
+    
+    const m = document.getElementById('modal-asociar-cfdi');
+    m.classList.remove('hidden');
+    m.classList.add('flex');
+    cargarCfdisParaAsociar();
+
+    // Si tiene RFC, sugerir contra-cuenta de inmediato
+    if (rfc) {
+        sugerirContraCuenta(rfc, '');
+    }
+}
+
+function cerrarModalAsociar() {
+    const m = document.getElementById('modal-asociar-cfdi');
+    m.classList.add('hidden');
+    m.classList.remove('flex');
+    movActualId = null;
+}
+
+function buscarCfdisDebounced() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(cargarCfdisParaAsociar, 300);
+}
+
+async function sugerirContraCuenta(rfc, nombre) {
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/cfdi/sugerir-cuenta?rfc=${encodeURIComponent(rfc)}&nombre=${encodeURIComponent(nombre)}`);
+        const data = await resp.json();
+        if (data.ok && data.cuentas && data.cuentas.length > 0) {
+            const input = document.getElementById('asoc-contra-cuenta');
+            if (!input.value) {
+                input.value = `${data.cuentas[0].cuenta} - ${data.cuentas[0].descripcion}`;
+                document.getElementById('asoc-cuenta-sugerida-badge').classList.remove('hidden');
+            }
+        }
+    } catch(e) {}
+}
+
+async function cargarCfdisParaAsociar() {
+    if (!movActualId) return;
+    const buscar = document.getElementById('asoc-buscar').value.trim();
+    const contenedor = document.getElementById('asoc-contenedor-cfdis');
+    contenedor.innerHTML = '<div class="text-center py-6 text-slate-400 text-xs">Buscando facturas XML...</div>';
+
+    try {
+        const url = `/empresas/${empresaId}/cfdi/lista-json?movimiento_id=${movActualId}&buscar=${encodeURIComponent(buscar)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        
+        if (!data.ok || !data.cfdis || data.cfdis.length === 0) {
+            contenedor.innerHTML = '<div class="text-center py-8 text-slate-400 text-xs">No se encontraron facturas XML con ese criterio. Prueba borrando el texto de búsqueda.</div>';
+            return;
+        }
+
+        cfdisCargados = data.cfdis;
+        let tieneAsociados = false;
+        let html = '';
+
+        cfdisCargados.forEach(c => {
+            if (c.ya_asociado) tieneAsociados = true;
+            html += `
+            <div class="p-3 rounded-lg border ${c.ya_asociado ? 'bg-emerald-50/70 border-emerald-300' : 'bg-white border-slate-200'} hover:border-orange-300 transition-colors flex items-center justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <input type="checkbox" value="${c.id}" data-rfc="${c.contraparte_rfc || ''}" data-nombre="${c.contraparte_nombre || ''}"
+                       class="cfdi-checkbox w-4 h-4 text-orange-600 rounded" ${c.ya_asociado ? 'checked' : ''} onchange="onCfdiCheckboxChanged(this)">
+                <div>
+                  <div class="font-bold text-slate-900 flex items-center gap-2">
+                    <span class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">${c.serie}${c.folio || 'S/F'}</span>
+                    <span class="text-slate-600 font-medium text-[11px]">${c.contraparte_nombre || c.contraparte_rfc}</span>
+                    ${c.ya_asociado ? '<span class="text-[10px] bg-emerald-600 text-white font-bold px-1.5 py-0.2 rounded">VINCULADA</span>' : ''}
+                  </div>
+                  <div class="text-[11px] text-slate-500 font-mono mt-0.5">
+                    Fecha: ${c.fecha} · UUID: ${c.uuid.substring(0, 13)}… · RFC: ${c.contraparte_rfc}
+                  </div>
+                </div>
+              </div>
+              <div class="text-right whitespace-nowrap">
+                <div class="font-mono font-bold text-sm text-slate-900">$${c.total.toFixed(2)}</div>
+                <div class="text-[10px] text-slate-400">Saldo: $${c.saldo.toFixed(2)}</div>
+                <button type="button" onclick="verDetalleXml(${c.id})" class="text-[10px] text-blue-600 hover:underline mt-0.5 font-semibold">
+                  👁️ Ver XML
+                </button>
+              </div>
+            </div>`;
+        });
+
+        contenedor.innerHTML = html;
+        actualizarContadorSeleccion();
+
+        const btnDesasoc = document.getElementById('btn-desasociar');
+        if (tieneAsociados) {
+            btnDesasoc.classList.remove('hidden');
+        } else {
+            btnDesasoc.classList.add('hidden');
+        }
+    } catch(e) {
+        contenedor.innerHTML = '<div class="text-center py-6 text-rose-500 text-xs">Error cargando facturas.</div>';
+    }
+}
+
+function onCfdiCheckboxChanged(chk) {
+    actualizarContadorSeleccion();
+    if (chk.checked) {
+        const rfc = chk.getAttribute('data-rfc') || '';
+        const nom = chk.getAttribute('data-nombre') || '';
+        sugerirContraCuenta(rfc, nom);
+    }
+}
+
+function actualizarContadorSeleccion() {
+    const chks = document.querySelectorAll('.cfdi-checkbox:checked');
+    document.getElementById('asoc-contador-seleccion').innerText = `${chks.length} factura(s) seleccionada(s)`;
+}
+
+async function confirmarAsociacion() {
+    if (!movActualId) return;
+    const chks = Array.from(document.querySelectorAll('.cfdi-checkbox:checked')).map(c => parseInt(c.value));
+    if (chks.length === 0) {
+        alert("Selecciona al menos una factura CFDI.");
+        return;
+    }
+
+    const contraCuenta = document.getElementById('asoc-contra-cuenta').value.trim();
+
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/movimientos/${movActualId}/asociar-cfdi`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+            body: JSON.stringify({
+                cfdi_ids: chks,
+                cuenta_contraparte: contraCuenta
+            })
+        });
+        const res = await resp.json();
+        if (res.ok) {
+            cerrarModalAsociar();
+            window.location.reload();
+        } else {
+            alert("Error: " + (res.error || "No se pudo asociar la factura."));
+        }
+    } catch(e) {
+        alert("Error de conexión al asociar.");
+    }
+}
+
+async function desasociarTodas() {
+    if (!movActualId) return;
+    if (!confirm("¿Deseas desvincular las facturas CFDI de este movimiento?")) return;
+
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/movimientos/${movActualId}/desasociar-cfdi`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+            body: JSON.stringify({})
+        });
+        const res = await resp.json();
+        if (res.ok) {
+            cerrarModalAsociar();
+            window.location.reload();
+        } else {
+            alert("Error al desvincular.");
+        }
+    } catch(e) {
+        alert("Error de conexión.");
+    }
+}
+
+// --------------------------------------------------------------------------
+// LÓGICA DE EDICIÓN DE MOVIMIENTO GENERAL
+// --------------------------------------------------------------------------
 function abrirModalEditar(id, fecha, tipo, total, desc, rfc, ref, fact) {
     document.getElementById('edit-id').value = id;
     document.getElementById('edit-fecha').value = fecha;
@@ -403,144 +1063,9 @@ async function guardarEdicionMovimiento() {
     }
 }
 
-// ASOCIACIÓN DE XML
-function abrirModalAsociar(id, tipo, rfc, total, desc) {
-    movActualId = id;
-    document.getElementById('asoc-mov-info').innerText = `Movimiento #${id} (${tipo.toUpperCase()} $${total.toFixed(2)}) · ${rfc ? 'RFC: ' + rfc : 'Sin RFC'} · ${desc}`;
-    document.getElementById('asoc-buscar').value = rfc || '';
-    
-    const m = document.getElementById('modal-asociar-cfdi');
-    m.classList.remove('hidden');
-    m.classList.add('flex');
-    cargarCfdisParaAsociar();
-}
-
-function cerrarModalAsociar() {
-    const m = document.getElementById('modal-asociar-cfdi');
-    m.classList.add('hidden');
-    m.classList.remove('flex');
-    movActualId = null;
-}
-
-function buscarCfdisDebounced() {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(cargarCfdisParaAsociar, 300);
-}
-
-async function cargarCfdisParaAsociar() {
-    if (!movActualId) return;
-    const buscar = document.getElementById('asoc-buscar').value.trim();
-    const contenedor = document.getElementById('asoc-contenedor-cfdis');
-    contenedor.innerHTML = '<div class="text-center py-6 text-slate-400 text-xs">Buscando facturas XML...</div>';
-
-    try {
-        const url = `/empresas/${empresaId}/cfdi/lista-json?movimiento_id=${movActualId}&buscar=${encodeURIComponent(buscar)}`;
-        const resp = await fetch(url);
-        const data = await resp.json();
-        
-        if (!data.ok || !data.cfdis || data.cfdis.length === 0) {
-            contenedor.innerHTML = '<div class="text-center py-8 text-slate-400 text-xs">No se encontraron facturas XML con ese criterio. Prueba borrando el texto de búsqueda.</div>';
-            return;
-        }
-
-        cfdisCargados = data.cfdis;
-        let tieneAsociados = false;
-        let html = '';
-
-        cfdisCargados.forEach(c => {
-            if (c.ya_asociado) tieneAsociados = true;
-            html += `
-            <div class="p-3 rounded-lg border ${c.ya_asociado ? 'bg-emerald-50/70 border-emerald-300' : 'bg-white border-slate-200'} hover:border-orange-300 transition-colors flex items-center justify-between gap-3">
-              <div class="flex items-center gap-3">
-                <input type="checkbox" value="${c.id}" class="cfdi-checkbox w-4 h-4 text-orange-600 rounded" ${c.ya_asociado ? 'checked' : ''} onchange="actualizarContadorSeleccion()">
-                <div>
-                  <div class="font-bold text-slate-900 flex items-center gap-2">
-                    <span class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">${c.serie}${c.folio || 'S/F'}</span>
-                    <span class="text-slate-600 font-medium text-[11px]">${c.contraparte_nombre || c.contraparte_rfc}</span>
-                    ${c.ya_asociado ? '<span class="text-[10px] bg-emerald-600 text-white font-bold px-1.5 py-0.2 rounded">VINCULADA</span>' : ''}
-                  </div>
-                  <div class="text-[11px] text-slate-500 font-mono mt-0.5">
-                    Fecha: ${c.fecha} · UUID: ${c.uuid.substring(0, 13)}… · RFC: ${c.contraparte_rfc}
-                  </div>
-                </div>
-              </div>
-              <div class="text-right whitespace-nowrap">
-                <div class="font-mono font-bold text-sm text-slate-900">$${c.total.toFixed(2)}</div>
-                <div class="text-[10px] text-slate-400">Saldo pend: $${c.saldo.toFixed(2)}</div>
-                <button type="button" onclick="verDetalleXml(${c.id})" class="text-[10px] text-blue-600 hover:underline mt-0.5 font-semibold">
-                  👁️ Ver XML
-                </button>
-              </div>
-            </div>`;
-        });
-
-        contenedor.innerHTML = html;
-        actualizarContadorSeleccion();
-
-        const btnDesasoc = document.getElementById('btn-desasociar');
-        if (tieneAsociados) {
-            btnDesasoc.classList.remove('hidden');
-        } else {
-            btnDesasoc.classList.add('hidden');
-        }
-    } catch(e) {
-        contenedor.innerHTML = '<div class="text-center py-6 text-rose-500 text-xs">Error cargando facturas.</div>';
-    }
-}
-
-function actualizarContadorSeleccion() {
-    const chks = document.querySelectorAll('.cfdi-checkbox:checked');
-    document.getElementById('asoc-contador-seleccion').innerText = `${chks.length} factura(s) seleccionada(s)`;
-}
-
-async function confirmarAsociacion() {
-    if (!movActualId) return;
-    const chks = Array.from(document.querySelectorAll('.cfdi-checkbox:checked')).map(c => parseInt(c.value));
-    if (chks.length === 0) {
-        alert("Selecciona al menos una factura CFDI.");
-        return;
-    }
-
-    try {
-        const resp = await fetch(`/empresas/${empresaId}/movimientos/${movActualId}/asociar-cfdi`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-            body: JSON.stringify({ cfdi_ids: chks })
-        });
-        const res = await resp.json();
-        if (res.ok) {
-            cerrarModalAsociar();
-            window.location.reload();
-        } else {
-            alert("Error: " + (res.error || "No se pudo asociar la factura."));
-        }
-    } catch(e) {
-        alert("Error de conexión al asociar.");
-    }
-}
-
-async function desasociarTodas() {
-    if (!movActualId) return;
-    if (!confirm("¿Deseas desvincular las facturas CFDI de este movimiento?")) return;
-
-    try {
-        const resp = await fetch(`/empresas/${empresaId}/movimientos/${movActualId}/desasociar-cfdi`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-            body: JSON.stringify({})
-        });
-        const res = await resp.json();
-        if (res.ok) {
-            cerrarModalAsociar();
-            window.location.reload();
-        } else {
-            alert("Error al desvincular.");
-        }
-    } catch(e) {
-        alert("Error de conexión.");
-    }
-}
-
+// --------------------------------------------------------------------------
+// DETALLE DE XML
+// --------------------------------------------------------------------------
 async function verDetalleXml(cfdiId) {
     const m = document.getElementById('modal-detalle-xml');
     const cont = document.getElementById('detalle-xml-contenido');

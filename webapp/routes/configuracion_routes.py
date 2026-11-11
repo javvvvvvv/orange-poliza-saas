@@ -39,6 +39,7 @@ from excel_importer import (
     listar_hojas, vista_previa, vista_previa_cruda, detectar_fila_encabezado
 )
 from asignacion_rapida import construir_plantilla_simple, validar_cuentas_iva_configuradas
+from polizas_edicion import obtener_asiento_movimiento, guardar_asiento_movimiento
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOADS_DIR = os.path.join(BASE_DIR, '..', "uploads")
@@ -844,9 +845,14 @@ def cfdi_detalle_json(empresa_id, cfdi_id):
 def movimiento_asociar_cfdi(empresa_id, movimiento_id):
     """
     Asocia manualmente una o varias facturas CFDI (XML) seleccionadas por el usuario a un movimiento.
+    Si se proporciona una cuenta_contraparte, la asigna y actualiza el asiento contable.
+    Si NO se proporciona, el movimiento permanece pendiente para que el usuario capture la contra-cuenta
+    sin ser saltado como cuadrado prematuramente.
     """
     datos = request.get_json(silent=True) or {}
     cfdi_ids = datos.get("cfdi_ids") or []
+    cuenta_contraparte = (datos.get("cuenta_contraparte") or "").strip()
+
     if isinstance(cfdi_ids, (int, str)):
         cfdi_ids = [int(cfdi_ids)]
     cfdi_ids = [int(cid) for cid in cfdi_ids if str(cid).isdigit()]
@@ -930,7 +936,112 @@ def movimiento_asociar_cfdi(empresa_id, movimiento_id):
         )
         con.commit()
 
-    return jsonify({"ok": True, "mensaje": f"{len(cfdis)} factura(s) asociadas correctamente al movimiento.", "folios": str_folios})
+    # Si se especificó una contra-cuenta, actualizar o generar el asiento contable
+    asiento_guardado = False
+    if cuenta_contraparte:
+        try:
+            asiento_actual = obtener_asiento_movimiento(empresa_id, movimiento_id)
+            if asiento_actual and asiento_actual.get("lineas"):
+                cta_clean = cuenta_contraparte.split(" - ")[0].split()[0].replace("-", "").replace(".", "").strip()
+                lineas_nuevas = []
+                for l in asiento_actual["lineas"]:
+                    es_banco = "banco" in l.get("nombre_cuenta", "").lower() or str(l.get("cuenta", "")).startswith("1020")
+                    if not es_banco:
+                        lineas_nuevas.append({
+                            "cuenta": cuenta_contraparte.split(" - ")[0].strip(),
+                            "cargo": l["cargo"],
+                            "abono": l["abono"],
+                            "descripcion": l.get("descripcion") or mov["descripcion"] or ""
+                        })
+                    else:
+                        lineas_nuevas.append(l)
+                guardar_asiento_movimiento(empresa_id, movimiento_id, lineas_nuevas, concepto=mov["descripcion"])
+                asiento_guardado = True
+        except Exception:
+            pass
+
+    return jsonify({
+        "ok": True,
+        "mensaje": f"{len(cfdis)} factura(s) asociadas correctamente.",
+        "folios": str_folios,
+        "asiento_guardado": asiento_guardado,
+        "requiere_contra_cuenta": not asiento_guardado and not bool(mov.get("poliza_id"))
+    })
+
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/cfdi/sugerir-cuenta")
+@login_required
+@empresa_requerida
+def cfdi_sugerir_cuenta(empresa_id):
+    """
+    Busca en el catálogo de cuentas de la empresa sugerencias para un cliente o proveedor
+    a partir de su RFC o nombre.
+    """
+    rfc = request.args.get("rfc", "").strip().upper()
+    nombre = request.args.get("nombre", "").strip()
+    cuentas = []
+
+    with get_connection() as con:
+        cur = con.cursor()
+        if rfc:
+            cur.execute(
+                """SELECT cuenta, descripcion FROM cuentas_catalogo
+                   WHERE empresa_id = %s AND (descripcion ILIKE %s OR cuenta ILIKE %s)
+                   ORDER BY cuenta LIMIT 5""",
+                (empresa_id, f"%{rfc}%", f"%{rfc}%")
+            )
+            cuentas = cur.fetchall()
+
+        if not cuentas and nombre:
+            palabras = [p for p in nombre.split() if len(p) >= 4 and p.upper() not in ("S.A.", "DE", "C.V.", "S.A", "C.V", "SAPI", "S.C.", "LLC")]
+            for p in palabras[:3]:
+                cur.execute(
+                    """SELECT cuenta, descripcion FROM cuentas_catalogo
+                       WHERE empresa_id = %s AND descripcion ILIKE %s
+                       ORDER BY cuenta LIMIT 5""",
+                    (empresa_id, f"%{p}%")
+                )
+                res = cur.fetchall()
+                if res:
+                    cuentas = res
+                    break
+
+    return jsonify({
+        "ok": True,
+        "cuentas": [{"cuenta": c["cuenta"], "descripcion": c["descripcion"]} for c in cuentas]
+    })
+
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/movimientos/<int:movimiento_id>/asiento-json")
+@login_required
+@empresa_requerida
+def movimiento_asiento_json(empresa_id, movimiento_id):
+    """
+    Devuelve los datos del asiento contable completo de un movimiento con números y nombres de cuenta.
+    Si el movimiento no tiene póliza aún, propone un asiento cuadrado inicial.
+    """
+    res = obtener_asiento_movimiento(empresa_id, movimiento_id)
+    if not res:
+        return jsonify({"ok": False, "error": "Movimiento no encontrado."}), 404
+    return jsonify({"ok": True, **res})
+
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/movimientos/<int:movimiento_id>/guardar-asiento", methods=["POST"])
+@login_required
+@empresa_requerida
+def movimiento_guardar_asiento_route(empresa_id, movimiento_id):
+    """
+    Guarda o edita el asiento contable manual de un movimiento, verificando cuadre exacto de cargos y abonos.
+    """
+    datos = request.get_json(silent=True) or {}
+    lineas = datos.get("lineas") or []
+    concepto = datos.get("concepto")
+
+    try:
+        resultado = guardar_asiento_movimiento(empresa_id, movimiento_id, lineas, concepto=concepto)
+        return jsonify(resultado)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
 
 
 @configuracion_bp.route("/empresas/<int:empresa_id>/movimientos/<int:movimiento_id>/desasociar-cfdi", methods=["POST"])
@@ -971,12 +1082,13 @@ def movimiento_desasociar_cfdi(empresa_id, movimiento_id):
 def movimientos_lista(empresa_id):
     """
     Pantalla completa para revisar y editar todos los movimientos bancarios importados,
-    sus facturas CFDI asociadas, estados de clasificación y pólizas.
+    sus asientos contables (número y nombre de cuenta), cobertura de facturas CFDI y estados.
     """
     buscar = request.args.get("buscar", "").strip()
     estado = request.args.get("estado", "").strip()
     tipo = request.args.get("tipo", "").strip()
     doc_id = request.args.get("documento_id", "").strip()
+    cobertura = request.args.get("cobertura", "").strip()
     pagina = max(1, int(request.args.get("pagina", 1)))
     por_pagina = 50
 
@@ -986,6 +1098,7 @@ def movimientos_lista(empresa_id):
             (empresa_id,)
         ).fetchall()
         bancos = con.execute("SELECT id, nombre, cuenta_contable FROM bancos WHERE empresa_id = %s", (empresa_id,)).fetchall()
+        cuentas = catalogo_repo.listar(empresa_id)
 
         where_clauses = ["m.empresa_id = %s"]
         params = [empresa_id]
@@ -1007,6 +1120,27 @@ def movimientos_lista(empresa_id):
             where_clauses.append("m.documento_id = %s")
             params.append(int(doc_id))
 
+        if cobertura == "cubierto_100":
+            where_clauses.append(
+                """EXISTS (SELECT 1 FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1)
+                   AND ABS(m.total - COALESCE((SELECT SUM(c.total) FROM cfdi_movimiento cm JOIN cfdis c ON c.id = cm.cfdi_id WHERE cm.movimiento_id = m.id AND cm.confirmado = 1), 0)) <= 0.05"""
+            )
+        elif cobertura == "parcial":
+            where_clauses.append(
+                """EXISTS (SELECT 1 FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1)
+                   AND COALESCE((SELECT SUM(c.total) FROM cfdi_movimiento cm JOIN cfdis c ON c.id = cm.cfdi_id WHERE cm.movimiento_id = m.id AND cm.confirmado = 1), 0) > 0
+                   AND COALESCE((SELECT SUM(c.total) FROM cfdi_movimiento cm JOIN cfdis c ON c.id = cm.cfdi_id WHERE cm.movimiento_id = m.id AND cm.confirmado = 1), 0) < m.total - 0.05"""
+            )
+        elif cobertura == "sobrepasa":
+            where_clauses.append(
+                """EXISTS (SELECT 1 FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1)
+                   AND COALESCE((SELECT SUM(c.total) FROM cfdi_movimiento cm JOIN cfdis c ON c.id = cm.cfdi_id WHERE cm.movimiento_id = m.id AND cm.confirmado = 1), 0) > m.total + 0.05"""
+            )
+        elif cobertura == "sin_facturas":
+            where_clauses.append(
+                "NOT EXISTS (SELECT 1 FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1)"
+            )
+
         where_sql = " AND ".join(where_clauses)
         total_movimientos = con.execute(f"SELECT COUNT(*) FROM movimientos m WHERE {where_sql}", tuple(params)).fetchone()[0]
 
@@ -1018,6 +1152,7 @@ def movimientos_lista(empresa_id):
                    d.nombre_archivo,
                    p.numero AS poliza_numero,
                    p.tipo AS poliza_tipo,
+                   p.cuadrada AS poliza_cuadrada,
                    (
                        SELECT string_agg(COALESCE(c.serie, '') || COALESCE(c.folio, 'S/F'), ', ')
                        FROM cfdi_movimiento cm
@@ -1026,7 +1161,18 @@ def movimientos_lista(empresa_id):
                    ) AS facturas_cfdi,
                    (
                        SELECT COUNT(*) FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1
-                   ) AS total_cfdis_asociados
+                   ) AS total_cfdis_asociados,
+                   (
+                       SELECT COALESCE(SUM(c.total), 0)
+                       FROM cfdi_movimiento cm
+                       JOIN cfdis c ON c.id = cm.cfdi_id
+                       WHERE cm.movimiento_id = m.id AND cm.confirmado = 1
+                   ) AS total_cfdis_monto,
+                   (
+                       SELECT COALESCE(SUM(cm.importe_aplicado), 0)
+                       FROM cfdi_movimiento cm
+                       WHERE cm.movimiento_id = m.id AND cm.confirmado = 1
+                   ) AS total_cfdis_aplicado
             FROM movimientos m
             LEFT JOIN documentos_importados d ON d.id = m.documento_id
             LEFT JOIN polizas p ON p.id = m.poliza_id
@@ -1034,7 +1180,67 @@ def movimientos_lista(empresa_id):
             ORDER BY m.fecha DESC, m.id DESC
             LIMIT %s OFFSET %s
         """
-        movimientos = con.execute(sql, tuple(params_pag)).fetchall()
+        movimientos_filas = con.execute(sql, tuple(params_pag)).fetchall()
+        movimientos = [dict(r) for r in movimientos_filas]
+
+        # Cargar en bloque las líneas de asientos contables para los movimientos mostrados
+        poliza_ids = [m["poliza_id"] for m in movimientos if m.get("poliza_id")]
+        lineas_por_poliza = {}
+        if poliza_ids:
+            placeholders_pol = ",".join(["%s"] * len(poliza_ids))
+            sql_lineas = f"""
+                SELECT pl.poliza_id, pl.cuenta, cc.descripcion AS nombre_cuenta, pl.naturaleza, pl.importe, pl.descripcion
+                FROM poliza_lineas pl
+                LEFT JOIN cuentas_catalogo cc ON cc.empresa_id = %s AND (cc.cuenta = pl.cuenta OR REPLACE(cc.cuenta, '-', '') = REPLACE(pl.cuenta, '-', ''))
+                WHERE pl.poliza_id IN ({placeholders_pol})
+                ORDER BY pl.poliza_id, pl.orden ASC, pl.id ASC
+            """
+            filas_lineas = con.execute(sql_lineas, tuple([empresa_id] + poliza_ids)).fetchall()
+            for fl in filas_lineas:
+                pid = fl["poliza_id"]
+                if pid not in lineas_por_poliza:
+                    lineas_por_poliza[pid] = []
+                lineas_por_poliza[pid].append({
+                    "cuenta": fl["cuenta"],
+                    "nombre_cuenta": fl["nombre_cuenta"] or "Cuenta no catalogada",
+                    "naturaleza": fl["naturaleza"].lower(),
+                    "importe": float(fl["importe"] or 0.0),
+                    "descripcion": fl["descripcion"] or ""
+                })
+
+        # Calcular estados de cobertura de facturas y adjuntar líneas contables
+        for m in movimientos:
+            tot = float(m["total"] or 0.0)
+            monto_cfdi = float(m.get("total_cfdis_monto") or 0.0)
+            cant_cfdi = int(m.get("total_cfdis_asociados") or 0)
+            diff = round(tot - monto_cfdi, 2)
+
+            if cant_cfdi == 0:
+                m["cobertura_badge"] = "sin_facturas"
+                m["cobertura_texto"] = "Sin facturas"
+                m["cobertura_detalle"] = f"Falta comprobar ${tot:,.2f}"
+                m["cobertura_color"] = "bg-slate-100 text-slate-700 border-slate-300"
+                m["cobertura_icono"] = "❌"
+            elif abs(diff) <= 0.05:
+                m["cobertura_badge"] = "cubierto_100"
+                m["cobertura_texto"] = "Cubierto 100%"
+                m["cobertura_detalle"] = f"${monto_cfdi:,.2f} de ${tot:,.2f}"
+                m["cobertura_color"] = "bg-emerald-100 text-emerald-800 border-emerald-300"
+                m["cobertura_icono"] = "✓"
+            elif diff > 0.05:
+                m["cobertura_badge"] = "parcial"
+                m["cobertura_texto"] = "Parcial / Incompleto"
+                m["cobertura_detalle"] = f"Cubierto ${monto_cfdi:,.2f} (Faltan ${diff:,.2f})"
+                m["cobertura_color"] = "bg-amber-100 text-amber-800 border-amber-300"
+                m["cobertura_icono"] = "⚠"
+            else:
+                m["cobertura_badge"] = "sobrepasa"
+                m["cobertura_texto"] = "Sobrepasa movimiento"
+                m["cobertura_detalle"] = f"Facturas: ${monto_cfdi:,.2f} (+${abs(diff):,.2f})"
+                m["cobertura_color"] = "bg-blue-100 text-blue-800 border-blue-300"
+                m["cobertura_icono"] = "ℹ"
+
+            m["lineas_asiento"] = lineas_por_poliza.get(m.get("poliza_id"), [])
 
         resumen = con.execute("""
             SELECT 
@@ -1042,7 +1248,14 @@ def movimientos_lista(empresa_id):
                 COALESCE(SUM(total), 0) AS suma_total,
                 COUNT(CASE WHEN estado_clasificacion IN ('pendiente', 'sugerido') THEN 1 END) AS pendientes,
                 COUNT(CASE WHEN poliza_id IS NOT NULL THEN 1 END) AS con_poliza,
-                COUNT(CASE WHEN EXISTS (SELECT 1 FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1) THEN 1 END) AS con_cfdi
+                COUNT(CASE WHEN EXISTS (SELECT 1 FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1) THEN 1 END) AS con_cfdi,
+                COUNT(CASE WHEN EXISTS (SELECT 1 FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1)
+                           AND ABS(m.total - COALESCE((SELECT SUM(c.total) FROM cfdi_movimiento cm2 JOIN cfdis c ON c.id = cm2.cfdi_id WHERE cm2.movimiento_id = m.id AND cm2.confirmado = 1), 0)) <= 0.05
+                      THEN 1 END) AS cubiertos_100,
+                COUNT(CASE WHEN EXISTS (SELECT 1 FROM cfdi_movimiento cm WHERE cm.movimiento_id = m.id AND cm.confirmado = 1)
+                           AND COALESCE((SELECT SUM(c.total) FROM cfdi_movimiento cm2 JOIN cfdis c ON c.id = cm2.cfdi_id WHERE cm2.movimiento_id = m.id AND cm2.confirmado = 1), 0) > 0
+                           AND COALESCE((SELECT SUM(c.total) FROM cfdi_movimiento cm2 JOIN cfdis c ON c.id = cm2.cfdi_id WHERE cm2.movimiento_id = m.id AND cm2.confirmado = 1), 0) < m.total - 0.05
+                      THEN 1 END) AS parciales
             FROM movimientos m
             WHERE m.empresa_id = %s
         """, (empresa_id,)).fetchone()
@@ -1054,6 +1267,7 @@ def movimientos_lista(empresa_id):
         movimientos=movimientos,
         docs=docs,
         bancos=bancos,
+        cuentas=cuentas,
         resumen=resumen,
         total_movimientos=total_movimientos,
         pagina=pagina,
@@ -1062,6 +1276,7 @@ def movimientos_lista(empresa_id):
         estado=estado,
         tipo=tipo,
         doc_id=doc_id,
+        cobertura=cobertura,
     )
 
 # --- Conciliaciones de CFDI sugeridas y confirmadas ---

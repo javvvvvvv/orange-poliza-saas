@@ -76,8 +76,34 @@
       </div>
       {% endfor %}
     </div>
+
+    <!-- COBERTURA DE FACTURAS EN PENDIENTES -->
+    {% set total_cfdi_sum = cfdis_asociados|sum(attribute='total') %}
+    {% set diff_cfdi = (movimiento.total - total_cfdi_sum)|round(2) %}
+    <div class="mt-2 pt-2 border-t border-emerald-200/60 flex items-center justify-between text-xs">
+      <div class="flex items-center gap-2">
+        <span class="font-semibold text-emerald-900">Cobertura de Facturas:</span>
+        {% if diff_cfdi|abs <= 0.05 %}
+          <span class="bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold px-2 py-0.5 rounded text-[11px]">
+            ✓ Cubierto 100% (${{ "%.2f"|format(total_cfdi_sum) }} de ${{ "%.2f"|format(movimiento.total) }})
+          </span>
+        {% elif diff_cfdi > 0.05 %}
+          <span class="bg-amber-100 text-amber-800 border border-amber-300 font-bold px-2 py-0.5 rounded text-[11px]">
+            ⚠ Parcial: Cubierto ${{ "%.2f"|format(total_cfdi_sum) }} (Faltan ${{ "%.2f"|format(diff_cfdi) }})
+          </span>
+        {% else %}
+          <span class="bg-blue-100 text-blue-800 border border-blue-300 font-bold px-2 py-0.5 rounded text-[11px]">
+            ℹ Sobrepasa: Facturas ${{ "%.2f"|format(total_cfdi_sum) }} (+${{ "%.2f"|format(diff_cfdi|abs) }})
+          </span>
+        {% endif %}
+      </div>
+      <div class="font-mono text-emerald-800 font-bold text-xs">
+        Total Facturas: ${{ "%.2f"|format(total_cfdi_sum) }}
+      </div>
+    </div>
+
     {% if cfdi_info.iva_importe %}
-    <div class="text-xs text-emerald-600 bg-emerald-100/50 rounded p-2">
+    <div class="text-xs text-emerald-600 bg-emerald-100/50 rounded p-2 mt-2">
       Base ${{ "%.2f"|format(cfdi_info.base or 0) }} — IVA ${{ "%.2f"|format(cfdi_info.iva_importe or 0) }}
       ({{ ((cfdi_info.tasa or 0) * 100)|round(0, 'floor')|int }}%). 
       <br><em>No hace falta que captures IVA; el sistema lo calcula y cuadra automáticamente con el XML.</em>
@@ -268,6 +294,24 @@
       <button type="button" onclick="cerrarModalAsociarDirecto()" class="text-slate-400 hover:text-white text-lg">✕</button>
     </div>
 
+    <!-- CAMPO DE CONTRA-CUENTA CONTABLE DENTRO DEL MODAL (REQ: NO SALTAR SIN CONTRA-CUENTA) -->
+    <div class="p-4 bg-amber-50/80 border-b border-amber-200">
+      <div class="flex items-center justify-between mb-1">
+        <label class="block text-xs font-bold text-amber-900">
+          Contra-cuenta Contable (Cliente / Proveedor / Gasto):
+        </label>
+        <span id="modal-asoc-sugerencia-badge" class="text-[10px] text-amber-700 font-semibold hidden">
+          💡 Sugerida por RFC / Nombre
+        </span>
+      </div>
+      <input type="text" id="modal-asoc-contra-cuenta" list="cuentas-catalogo"
+             placeholder="Escribe o selecciona la cuenta contable (ej. 20101005)..."
+             class="w-full border border-amber-300 rounded-lg px-3 py-2 text-xs font-mono bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none">
+      <p class="text-[10px] text-amber-800 mt-1">
+        Si seleccionas una cuenta aquí, el movimiento se guardará y cuadrará con ella. Si la dejas vacía, se vinculará la factura pero el movimiento permanecerá pendiente para que captures la cuenta con calma.
+      </p>
+    </div>
+
     <div class="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-3">
       <div class="flex-1 relative">
         <input type="text" id="modal-asoc-buscar" oninput="buscarCfdisDebounced()"
@@ -345,7 +389,8 @@ async function cargarCfdisDirecto() {
             html += `
             <div class="p-3 rounded-lg border ${c.ya_asociado ? 'bg-emerald-50/70 border-emerald-300' : 'bg-white border-slate-200'} hover:border-orange-300 transition-colors flex items-center justify-between gap-3">
               <div class="flex items-center gap-3">
-                <input type="checkbox" value="${c.id}" class="cfdi-chk w-4 h-4 text-orange-600 rounded" ${c.ya_asociado ? 'checked' : ''} onchange="actualizarContadorDirecto()">
+                <input type="checkbox" value="${c.id}" data-rfc="${c.contraparte_rfc || ''}" data-nombre="${c.contraparte_nombre || ''}"
+                       class="cfdi-chk w-4 h-4 text-orange-600 rounded" ${c.ya_asociado ? 'checked' : ''} onchange="onCfdiChkChanged(this)">
                 <div>
                   <div class="font-bold text-slate-900 flex items-center gap-2">
                     <span class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">${c.serie}${c.folio || 'S/F'}</span>
@@ -370,6 +415,29 @@ async function cargarCfdisDirecto() {
     }
 }
 
+function onCfdiChkChanged(chk) {
+    actualizarContadorDirecto();
+    if (chk.checked) {
+        const rfc = chk.getAttribute('data-rfc') || '';
+        const nom = chk.getAttribute('data-nombre') || '';
+        sugerirContraCuentaModal(rfc, nom);
+    }
+}
+
+async function sugerirContraCuentaModal(rfc, nombre) {
+    try {
+        const resp = await fetch(`/empresas/${empresaId}/cfdi/sugerir-cuenta?rfc=${encodeURIComponent(rfc)}&nombre=${encodeURIComponent(nombre)}`);
+        const data = await resp.json();
+        if (data.ok && data.cuentas && data.cuentas.length > 0) {
+            const input = document.getElementById('modal-asoc-contra-cuenta');
+            if (!input.value) {
+                input.value = `${data.cuentas[0].cuenta} - ${data.cuentas[0].descripcion}`;
+                document.getElementById('modal-asoc-sugerencia-badge').classList.remove('hidden');
+            }
+        }
+    } catch(e) {}
+}
+
 function actualizarContadorDirecto() {
     const chks = document.querySelectorAll('.cfdi-chk:checked');
     document.getElementById('modal-asoc-contador').innerText = `${chks.length} factura(s) seleccionada(s)`;
@@ -382,11 +450,16 @@ async function guardarAsociacionDirecto() {
         return;
     }
 
+    const contraCuenta = document.getElementById('modal-asoc-contra-cuenta').value.trim();
+
     try {
         const resp = await fetch(`/empresas/${empresaId}/movimientos/${movimientoId}/asociar-cfdi`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-            body: JSON.stringify({ cfdi_ids: chks })
+            body: JSON.stringify({
+                cfdi_ids: chks,
+                cuenta_contraparte: contraCuenta
+            })
         });
         const res = await resp.json();
         if (res.ok) {
