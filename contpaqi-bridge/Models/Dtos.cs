@@ -44,7 +44,19 @@ public record ProgresoCuentasDto(
 
 public record RespuestaBridge(bool Exito, string Mensaje, object? Datos = null);
 
-public record CuentaDto(string Codigo, string Nombre, string? AgrupadorSat);
+public record CuentaDto(
+    string Codigo,
+    string Nombre,
+    string? AgrupadorSat,
+    int IdContpaqi = 0,
+    string? IdComparacion = null
+)
+{
+    public string ObtenerIdComparacion() =>
+        !string.IsNullOrWhiteSpace(IdComparacion)
+            ? IdComparacion!
+            : $"{IdContpaqi}|{Codigo.Trim()}|{Nombre.Trim()}";
+}
 
 public record EmpresaDto(string Nombre, string BaseDatos);
 public record CrearCuentaRequest(string Empresa, CuentaDto Cuenta);

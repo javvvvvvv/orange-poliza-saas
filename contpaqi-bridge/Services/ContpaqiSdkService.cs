@@ -495,11 +495,55 @@ public sealed class ContpaqiSdkService : IDisposable
         Stopwatch sw)
     {
         var mapa = new Dictionary<string, CuentaDto>(StringComparer.OrdinalIgnoreCase);
+        var codigoPorId = new Dictionary<int, string>();
+        var huellasExistentes = new HashSet<string>(StringComparer.Ordinal);
+
         foreach (var c in baseExistente)
         {
             if (!string.IsNullOrWhiteSpace(c.Codigo))
             {
-                mapa[c.Codigo] = c;
+                var dtoNorm = c with { IdComparacion = c.ObtenerIdComparacion() };
+                mapa[c.Codigo] = dtoNorm;
+                huellasExistentes.Add(dtoNorm.IdComparacion!);
+                if (c.IdContpaqi > 0)
+                {
+                    codigoPorId[c.IdContpaqi] = c.Codigo;
+                }
+            }
+        }
+
+        void AplicarCuentaDetectada(int idContpaqi, string codigo, string nombre, ref int contadorCambios, ref string? ultima)
+        {
+            string idComp = $"{idContpaqi}|{codigo}|{nombre}";
+            if (huellasExistentes.Contains(idComp))
+            {
+                return;
+            }
+
+            // Si el mismo IdContpaqi tenía antes otro número de cuenta, reemplazar el anterior
+            if (idContpaqi > 0 && codigoPorId.TryGetValue(idContpaqi, out var codigoAnterior) &&
+                !string.Equals(codigoAnterior, codigo, StringComparison.OrdinalIgnoreCase))
+            {
+                mapa.Remove(codigoAnterior);
+            }
+
+            mapa.TryGetValue(codigo, out var previa);
+            // Si existía sin IdContpaqi pero con el mismo código y nombre exacto, solo actualizamos su huella sin contarlo como cambio
+            bool eraMismaSinId = previa is not null && previa.IdContpaqi == 0 &&
+                                 string.Equals(previa.Nombre, nombre, StringComparison.Ordinal);
+
+            var nuevaDto = new CuentaDto(codigo, nombre, previa?.AgrupadorSat, idContpaqi, idComp);
+            mapa[codigo] = nuevaDto;
+            huellasExistentes.Add(idComp);
+            if (idContpaqi > 0)
+            {
+                codigoPorId[idContpaqi] = codigo;
+            }
+
+            if (!eraMismaSinId)
+            {
+                contadorCambios++;
+                ultima = $"{codigo} — {nombre} [ID:{idContpaqi}]";
             }
         }
 
@@ -509,7 +553,7 @@ public sealed class ContpaqiSdkService : IDisposable
         string? ultimaDetectada = null;
 
         _log.LogInformation(
-            "Iniciando sincronización INCREMENTAL para {Empresa} (base={Base}, ultimoIdConocido={UltimoId})",
+            "Iniciando sincronización INCREMENTAL por IdComparacion para {Empresa} (base={Base}, ultimoIdConocido={UltimoId})",
             emp, mapa.Count, ultimoIdConocido);
 
         _progresoCuentas[emp] = new ProgresoCuentasDto(
@@ -521,7 +565,7 @@ public sealed class ContpaqiSdkService : IDisposable
             Porcentaje: 35.0,
             Segundos: Math.Round(sw.Elapsed.TotalSeconds, 1),
             CuentasPorSegundo: 0.0,
-            Etapa: $"Comparando catálogo en CONTPAQi contra {mapa.Count:N0} cuentas registradas...",
+            Etapa: $"Comparando huella (ID+Cuenta+Nombre) contra {mapa.Count:N0} cuentas registradas...",
             UltimaCuenta: null,
             DesdeCache: false,
             Error: null,
@@ -533,46 +577,49 @@ public sealed class ContpaqiSdkService : IDisposable
 
         if (ultimoIdConocido > 0)
         {
-            // Caso rápido: ya conocemos el último ID de SQL Server en CONTPAQi.
-            // Solo buscamos IDs mayores a ultimoIdConocido (hasta 8 huecos consecutivos por si hubo cuentas borradas).
+            // Revisamos también las últimas 3 cuentas previas por si acaban de editarse, y luego IDs nuevos hacia adelante
             int misses = 0;
-            int idCursor = ultimoIdConocido + 1;
+            int idCursor = Math.Max(1, ultimoIdConocido - 2);
             while (misses < 8)
             {
                 if (BuscarCuentaPorId(cuenta, idCursor))
                 {
-                    misses = 0;
-                    maxIdActual = idCursor;
+                    if (idCursor > ultimoIdConocido)
+                    {
+                        misses = 0;
+                    }
+                    if (idCursor > maxIdActual)
+                    {
+                        maxIdActual = idCursor;
+                    }
                     string codigo = ((string)cuenta.Codigo).Replace("\0", "").Trim();
                     string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
                     if (!string.IsNullOrEmpty(codigo) && codigo != "_CUADRE" && !codigo.StartsWith("_"))
                     {
-                        if (!mapa.TryGetValue(codigo, out var previa) || previa.Nombre != nombre)
+                        int cambiosAntes = nuevasOActualizadas;
+                        AplicarCuentaDetectada(idCursor, codigo, nombre, ref nuevasOActualizadas, ref ultimaDetectada);
+                        if (nuevasOActualizadas > cambiosAntes)
                         {
-                            nuevasOActualizadas++;
+                            _progresoCuentas[emp] = new ProgresoCuentasDto(
+                                emp,
+                                EnCurso: true,
+                                Terminado: false,
+                                Leidas: mapa.Count,
+                                TotalEstimado: mapa.Count,
+                                Porcentaje: 80.0,
+                                Segundos: Math.Round(sw.Elapsed.TotalSeconds, 1),
+                                CuentasPorSegundo: Math.Round(nuevasOActualizadas / Math.Max(0.1, sw.Elapsed.TotalSeconds), 1),
+                                Etapa: $"Detectada diferencia #{nuevasOActualizadas}: {codigo}",
+                                UltimaCuenta: ultimaDetectada,
+                                DesdeCache: false,
+                                Error: null,
+                                Nuevas: nuevasOActualizadas,
+                                Modo: "incremental"
+                            );
                         }
-                        mapa[codigo] = new CuentaDto(codigo, nombre, previa?.AgrupadorSat);
-                        ultimaDetectada = $"{codigo} — {nombre}";
-
-                        _progresoCuentas[emp] = new ProgresoCuentasDto(
-                            emp,
-                            EnCurso: true,
-                            Terminado: false,
-                            Leidas: mapa.Count,
-                            TotalEstimado: mapa.Count,
-                            Porcentaje: 80.0,
-                            Segundos: Math.Round(sw.Elapsed.TotalSeconds, 1),
-                            CuentasPorSegundo: Math.Round(nuevasOActualizadas / Math.Max(0.1, sw.Elapsed.TotalSeconds), 1),
-                            Etapa: $"Detectada cuenta nueva #{nuevasOActualizadas}: {codigo}",
-                            UltimaCuenta: ultimaDetectada,
-                            DesdeCache: false,
-                            Error: null,
-                            Nuevas: nuevasOActualizadas,
-                            Modo: "incremental"
-                        );
                     }
                 }
-                else
+                else if (idCursor > ultimoIdConocido)
                 {
                     misses++;
                 }
@@ -582,7 +629,6 @@ public sealed class ContpaqiSdkService : IDisposable
         else
         {
             // Primera calibración de UltimoId sobre un catálogo ya existente:
-            // 1) Localizamos el ID máximo en CONTPAQi con búsqueda exponencial + binaria por ventana
             int low = Math.Max(1, mapa.Count);
             int encontradosLow = BuscarIdEnVentana(cuenta, low, ventana: 6);
             if (encontradosLow == 0 && low > 20)
@@ -594,7 +640,7 @@ public sealed class ContpaqiSdkService : IDisposable
             int high = low + step;
             int ultimoHit = Math.Max(low, encontradosLow);
 
-            while ( step <= 4096 )
+            while (step <= 4096)
             {
                 int hit = BuscarIdEnVentana(cuenta, high, ventana: 6);
                 if (hit > 0)
@@ -610,7 +656,6 @@ public sealed class ContpaqiSdkService : IDisposable
                 }
             }
 
-            // Búsqueda binaria entre [low, high]
             int izq = low;
             int der = high;
             while (der - izq > 8)
@@ -628,7 +673,6 @@ public sealed class ContpaqiSdkService : IDisposable
                 }
             }
 
-            // Barrido fino hacia adelante desde izq para encontrar el último ID exacto
             int missesAdelante = 0;
             int cursorAdelante = Math.Max(1, izq);
             while (missesAdelante < 15)
@@ -665,7 +709,6 @@ public sealed class ContpaqiSdkService : IDisposable
                 Modo: "incremental"
             );
 
-            // 2) Caminar hacia atrás desde maxIdActual hasta encontrar 12 cuentas consecutivas que ya estaban en el catálogo
             int conocidasConsecutivas = 0;
             for (int id = maxIdActual; id >= 1 && conocidasConsecutivas < 12; id--)
             {
@@ -675,12 +718,11 @@ public sealed class ContpaqiSdkService : IDisposable
                     string nombre = ((string)cuenta.Nombre).Replace("\0", "").Trim();
                     if (!string.IsNullOrEmpty(codigo) && codigo != "_CUADRE" && !codigo.StartsWith("_"))
                     {
-                        if (!mapa.TryGetValue(codigo, out var previa) || previa.Nombre != nombre)
+                        int antes = nuevasOActualizadas;
+                        AplicarCuentaDetectada(id, codigo, nombre, ref nuevasOActualizadas, ref ultimaDetectada);
+                        if (nuevasOActualizadas > antes)
                         {
-                            nuevasOActualizadas++;
                             conocidasConsecutivas = 0;
-                            mapa[codigo] = new CuentaDto(codigo, nombre, previa?.AgrupadorSat);
-                            ultimaDetectada = $"{codigo} — {nombre}";
                         }
                         else
                         {
@@ -777,7 +819,8 @@ public sealed class ContpaqiSdkService : IDisposable
                     
                     if (codigo != "_CUADRE" && !codigo.StartsWith("_"))
                     {
-                        resultado.Add(new CuentaDto(codigo, nombre, null));
+                        string idComp = $"{idActual}|{codigo}|{nombre}";
+                        resultado.Add(new CuentaDto(codigo, nombre, null, idActual, idComp));
                         int n = resultado.Count;
                         if (n % 5 == 0 || n == 1)
                         {

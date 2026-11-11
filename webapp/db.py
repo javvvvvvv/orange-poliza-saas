@@ -321,6 +321,8 @@ def _aplicar_migraciones(con: Connection):
         ("cfdi_impuestos", "tipo_factor", "TEXT NOT NULL DEFAULT 'Tasa'"),
         ("empresas", "cuenta_retencion_iva", "TEXT"),
         ("empresas", "cuenta_retencion_isr", "TEXT"),
+        ("cuentas_catalogo", "id_contpaqi", "INTEGER"),
+        ("cuentas_catalogo", "id_comparacion", "TEXT"),
     ]
     cur = con.cursor()
 

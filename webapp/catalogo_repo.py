@@ -173,11 +173,17 @@ def eliminar_todo(empresa_id):
 
 
 class TotalCuentasSincronizadas(int):
-    def __new__(cls, total, nuevas=0, modo="incremental"):
+    def __new__(cls, total, nuevas=0, reemplazadas=0, iguales=0, modo="incremental"):
         inst = super().__new__(cls, int(total))
         inst.nuevas = int(nuevas)
+        inst.reemplazadas = int(reemplazadas)
+        inst.iguales = int(iguales)
         inst.modo = str(modo or "incremental")
         return inst
+
+
+def _construir_id_comparacion(id_contpaqi: int, cuenta: str, descripcion: str) -> str:
+    return f"{int(id_contpaqi or 0)}|{str(cuenta or '').strip()}|{str(descripcion or '').strip()}"
 
 
 def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa, forzar=False, callback_etapa=None):
@@ -212,50 +218,146 @@ def sincronizar_desde_contpaqi(empresa_id, nombre_interno_empresa, forzar=False,
         nuevas_sdk = int(data.get("nuevas") or 0)
         modo_sdk = str(data.get("modo") or ("completo" if forzar else "incremental"))
         if not cuentas:
-            return TotalCuentasSincronizadas(0, nuevas=0, modo=modo_sdk)
+            return TotalCuentasSincronizadas(0, nuevas=0, reemplazadas=0, iguales=0, modo=modo_sdk)
 
         limpias = {}
         agrupadores = {}
+        ids_contpaqi = {}
+        ids_comparacion = {}
+
         for c in cuentas:
             _limp = lambda v: str(v).replace("\x00", "").strip() if v else ""
             _cod = _limp(c.get("codigo"))
             _nom = _limp(c.get("nombre"))
             _agr = _limp(c.get("agrupadorSat") or c.get("agrupador_sat"))
+            _id_ct = int(c.get("idContpaqi") or c.get("id_contpaqi") or 0)
+            _id_comp = _limp(c.get("idComparacion") or c.get("id_comparacion")) or _construir_id_comparacion(_id_ct, _cod, _nom)
             if _cod and _cod != "_CUADRE" and not _cod.startswith("_"):
                 limpias[_cod] = _nom
                 agrupadores[_cod] = _agr
-
-        # Optimización: si fue sincronización incremental, no hubo cuentas nuevas en CONTPAQi
-        # y la base de datos ya tiene todas las cuentas cargadas, no reescribimos toda la tabla.
-        if not forzar and modo_sdk == "incremental" and nuevas_sdk == 0 and total_previo == len(limpias):
-            return TotalCuentasSincronizadas(len(limpias), nuevas=0, modo="incremental")
-
-        if callback_etapa:
-            callback_etapa("guardando_bd", len(limpias), len(limpias))
-            
-        con = get_connection()
-        if forzar:
-            con.execute("DELETE FROM cuentas_catalogo WHERE empresa_id = ?", (empresa_id,))
+                ids_contpaqi[_cod] = _id_ct
+                ids_comparacion[_cod] = _id_comp
 
         filas_jerarquia = _inferir_jerarquia(list(limpias.items()))
-        insert_data = [
-            (empresa_id, cod, nom, padre or "", nivel, agrupadores.get(cod, ""))
-            for cod, nom, padre, nivel in filas_jerarquia
-        ]
-            
-        con.cursor().executemany(
-            """INSERT INTO cuentas_catalogo (empresa_id, cuenta, descripcion, cuenta_padre, nivel, codigo_agrupador)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(empresa_id, cuenta) DO UPDATE SET
-                  descripcion = excluded.descripcion,
-                  cuenta_padre = excluded.cuenta_padre,
-                  nivel = excluded.nivel,
-                  codigo_agrupador = excluded.codigo_agrupador""",
-            insert_data
-        )
+
+        con = get_connection()
+        cur = con.cursor()
+        # Asegurar que las columnas existen en instalaciones previas
+        cur.execute("ALTER TABLE cuentas_catalogo ADD COLUMN IF NOT EXISTS id_contpaqi INTEGER")
+        cur.execute("ALTER TABLE cuentas_catalogo ADD COLUMN IF NOT EXISTS id_comparacion TEXT")
+
+        existentes_rows = cur.execute(
+            """SELECT id, cuenta, descripcion, cuenta_padre, nivel, codigo_agrupador, id_contpaqi, id_comparacion
+               FROM cuentas_catalogo WHERE empresa_id = ?""",
+            (empresa_id,),
+        ).fetchall()
+
+        por_cuenta = {}
+        por_id_contpaqi = {}
+        for r in existentes_rows:
+            cta_str = str(r["cuenta"] or "").strip()
+            por_cuenta[cta_str] = r
+            id_ct_db = int(r["id_contpaqi"] or 0)
+            if id_ct_db > 0:
+                por_id_contpaqi[id_ct_db] = r
+
+        a_insertar_o_reemplazar = []
+        a_reemplazar_por_id_pk = []
+        nuevas_cnt = 0
+        reemplazadas_cnt = 0
+        iguales_cnt = 0
+
+        for cod, nom, padre, nivel in filas_jerarquia:
+            padre_str = padre or ""
+            agr_str = agrupadores.get(cod, "")
+            id_ct = ids_contpaqi.get(cod, 0)
+            id_comp = ids_comparacion.get(cod) or _construir_id_comparacion(id_ct, cod, nom)
+
+            # 1) ¿Existía con el mismo id_contpaqi pero cambió su código de cuenta?
+            fila_mismo_id = por_id_contpaqi.get(id_ct) if id_ct > 0 else None
+            if fila_mismo_id is not None and str(fila_mismo_id["cuenta"]).strip() != cod:
+                a_reemplazar_por_id_pk.append((
+                    cod, nom, padre_str, nivel, agr_str, id_ct, id_comp, fila_mismo_id["id"]
+                ))
+                reemplazadas_cnt += 1
+                continue
+
+            # 2) ¿Existe ya por código de cuenta?
+            fila_prev = por_cuenta.get(cod)
+            if fila_prev is None:
+                a_insertar_o_reemplazar.append((
+                    empresa_id, cod, nom, padre_str, nivel, agr_str, id_ct, id_comp
+                ))
+                nuevas_cnt += 1
+            else:
+                id_comp_prev = str(fila_prev["id_comparacion"] or "").strip()
+                desc_prev = str(fila_prev["descripcion"] or "").strip()
+                padre_prev = str(fila_prev["cuenta_padre"] or "").strip()
+                nivel_prev = int(fila_prev["nivel"] or 1)
+                id_ct_prev = int(fila_prev["id_contpaqi"] or 0)
+
+                # Si la huella id_comparacion cambió (o cambió descripción / id_contpaqi)
+                cambio_negocio = (desc_prev != nom) or (id_ct > 0 and id_ct_prev > 0 and id_ct != id_ct_prev)
+                cambio_estructura = (id_comp_prev != id_comp) or (padre_prev != padre_str) or (nivel_prev != nivel)
+
+                if cambio_negocio or cambio_estructura:
+                    a_insertar_o_reemplazar.append((
+                        empresa_id, cod, nom, padre_str, nivel, agr_str, id_ct, id_comp
+                    ))
+                    if cambio_negocio:
+                        reemplazadas_cnt += 1
+                    else:
+                        iguales_cnt += 1
+                else:
+                    iguales_cnt += 1
+
+        if callback_etapa and (a_insertar_o_reemplazar or a_reemplazar_por_id_pk):
+            callback_etapa("guardando_bd", len(a_insertar_o_reemplazar) + len(a_reemplazar_por_id_pk), len(filas_jerarquia))
+
+        # Si el usuario pidió forzar relectura completa, también eliminamos cuentas que ya no existen en CONTPAQi
+        if forzar and existentes_rows:
+            codigos_actuales = set(limpias.keys())
+            ids_a_borrar = [
+                r["id"] for r in existentes_rows
+                if str(r["cuenta"] or "").strip() not in codigos_actuales
+            ]
+            if ids_a_borrar:
+                placeholders = ",".join("?" for _ in ids_a_borrar)
+                cur.execute(f"DELETE FROM cuentas_catalogo WHERE id IN ({placeholders})", tuple(ids_a_borrar))
+
+        if a_reemplazar_por_id_pk:
+            cur.executemany(
+                """UPDATE cuentas_catalogo
+                   SET cuenta = ?, descripcion = ?, cuenta_padre = ?, nivel = ?,
+                       codigo_agrupador = ?, id_contpaqi = ?, id_comparacion = ?
+                   WHERE id = ?""",
+                a_reemplazar_por_id_pk,
+            )
+
+        if a_insertar_o_reemplazar:
+            cur.executemany(
+                """INSERT INTO cuentas_catalogo
+                      (empresa_id, cuenta, descripcion, cuenta_padre, nivel, codigo_agrupador, id_contpaqi, id_comparacion)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(empresa_id, cuenta) DO UPDATE SET
+                      descripcion = excluded.descripcion,
+                      cuenta_padre = excluded.cuenta_padre,
+                      nivel = excluded.nivel,
+                      codigo_agrupador = excluded.codigo_agrupador,
+                      id_contpaqi = excluded.id_contpaqi,
+                      id_comparacion = excluded.id_comparacion""",
+                a_insertar_o_reemplazar,
+            )
+
         con.commit()
         con.close()
-        nuevas_reales = nuevas_sdk if modo_sdk == "incremental" else max(0, len(insert_data) - total_previo)
-        return TotalCuentasSincronizadas(len(insert_data), nuevas=nuevas_reales, modo=modo_sdk)
+        nuevas_final = max(nuevas_cnt, nuevas_sdk if reemplazadas_cnt == 0 else nuevas_cnt)
+        return TotalCuentasSincronizadas(
+            len(filas_jerarquia),
+            nuevas=nuevas_final,
+            reemplazadas=reemplazadas_cnt,
+            iguales=iguales_cnt,
+            modo=modo_sdk,
+        )
     except Exception as e:
         raise Exception(f"No se pudo sincronizar con CONTPAQi: {str(e)}")
