@@ -1,38 +1,314 @@
 {% extends "base.html" %}
 {% block titulo %}Documentos importados{% endblock %}
 {% block contenido %}
-<h1 class="text-xl font-semibold text-marino-900 mb-6">Documentos importados</h1>
-
-<div class="bg-white border border-slate-200 rounded-xl overflow-hidden overflow-x-auto">
-  <table class="w-full text-sm">
-    <thead>
-      <tr class="text-left text-xs text-slate-500 border-b border-slate-200">
-        <th class="px-5 py-2">Archivo</th>
-        <th class="px-5 py-2">Banco</th>
-        <th class="px-5 py-2">Importado</th>
-        <th class="px-5 py-2">Movimientos</th>
-        <th class="px-5 py-2">Con póliza</th>
-        <th class="px-5 py-2"></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for d in documentos %}
-      <tr class="border-b border-slate-100 last:border-0">
-        <td class="px-5 py-3">{{ d.nombre_archivo }}</td>
-        <td class="px-5 py-3 text-slate-500">{{ d.banco_nombre or '—' }}</td>
-        <td class="px-5 py-3 text-slate-500">{{ d.importado_en }}</td>
-        <td class="px-5 py-3">{{ d.total_movimientos }}</td>
-        <td class="px-5 py-3">{{ d.con_poliza }}</td>
-        <td class="px-5 py-3 text-right">
-          <a href="/empresas/{{ request.view_args.empresa_id }}/documentos/{{ d.id }}/marcado" class="text-naranja-600 hover:underline text-xs">
-            Descargar estado marcado
-          </a>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="6" class="px-5 py-8 text-center text-slate-400">Todavía no se ha importado ningún documento.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+{% set eid = request.view_args.get('empresa_id') %}
+<div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+  <div>
+    <h1 class="text-xl font-bold text-marino-900">Estados de Cuenta y Documentos Importados</h1>
+    <p class="text-xs text-slate-500 mt-1">
+      Consulta los archivos subidos, re-mapea qué columnas lee el sistema si hubo un error al registrarlos, edita movimientos o elimina importaciones.
+    </p>
+  </div>
+  <div class="flex items-center gap-2">
+    <a href="/empresas/{{ eid }}/importar/descargar-plantilla"
+       class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm flex items-center gap-1.5 transition-colors">
+      <span>📥</span> Descargar Plantilla Excel Ejemplo
+    </a>
+    <a href="/empresas/{{ eid }}/importar"
+       class="px-3.5 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-xs font-bold shadow-sm flex items-center gap-1.5 transition-colors">
+      <span>➕</span> Importar Nuevo Estado de Cuenta
+    </a>
+  </div>
 </div>
+
+<div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm mb-8">
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs uppercase tracking-wider text-slate-500 bg-slate-50 border-b border-slate-200">
+          <th class="px-5 py-3 font-semibold">Archivo</th>
+          <th class="px-5 py-3 font-semibold">Banco asignado</th>
+          <th class="px-5 py-3 font-semibold">Fecha Importación</th>
+          <th class="px-5 py-3 font-semibold text-center">Movimientos</th>
+          <th class="px-5 py-3 font-semibold text-center">Con Póliza</th>
+          <th class="px-5 py-3 font-semibold text-right">Acciones</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for d in documentos %}
+        <tr class="hover:bg-slate-50/80 transition-colors">
+          <td class="px-5 py-3.5">
+            <div class="font-medium text-marino-900 flex items-center gap-2">
+              <span class="text-base">📄</span>
+              <span>{{ d.nombre_archivo }}</span>
+            </div>
+            <div class="text-[11px] text-slate-400 mt-0.5 font-mono">
+              ID #{{ d.id }} · {{ d.tipo_archivo|upper }} {% if d.nombre_hoja %}· Hoja: {{ d.nombre_hoja }}{% endif %}
+            </div>
+          </td>
+          <td class="px-5 py-3.5 text-xs text-slate-600">
+            {% if d.banco_nombre %}
+              <span class="bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-md font-semibold">
+                {{ d.banco_nombre }}
+              </span>
+            {% else %}
+              <span class="text-slate-400 italic">Sin banco asignado</span>
+            {% endif %}
+          </td>
+          <td class="px-5 py-3.5 text-xs text-slate-500 whitespace-nowrap">
+            {{ d.importado_en }}
+          </td>
+          <td class="px-5 py-3.5 text-center">
+            <span class="bg-slate-100 text-slate-800 font-bold px-2.5 py-0.5 rounded-full text-xs">
+              {{ d.total_movimientos }}
+            </span>
+          </td>
+          <td class="px-5 py-3.5 text-center">
+            <span class="{% if d.con_poliza > 0 %}bg-emerald-100 text-emerald-800 font-bold{% else %}bg-slate-100 text-slate-500{% endif %} px-2.5 py-0.5 rounded-full text-xs">
+              {{ d.con_poliza }}
+            </span>
+          </td>
+          <td class="px-5 py-3.5 text-right whitespace-nowrap">
+            <div class="flex items-center justify-end gap-1.5">
+              <!-- Botón Re-mapear -->
+              <a href="/empresas/{{ eid }}/documentos/{{ d.id }}/remap"
+                 title="Volver a abrir el asistente de lectura de columnas para este archivo"
+                 class="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors">
+                <span>🔄</span> Re-mapear
+              </a>
+
+              <!-- Botón Ver / Editar Movimientos -->
+              <button type="button"
+                      onclick="abrirModalMovimientos({{ d.id }}, '{{ d.nombre_archivo }}')"
+                      title="Ver y editar los movimientos leídos de este estado de cuenta"
+                      class="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors">
+                <span>✏️</span> Ver / Editar
+              </button>
+
+              <!-- Botón Descargar Marcado -->
+              <a href="/empresas/{{ eid }}/documentos/{{ d.id }}/marcado"
+                 title="Descargar archivo Excel original marcado con números de póliza"
+                 class="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors">
+                <span>📥</span> Marcado
+              </a>
+
+              <!-- Botón Eliminar -->
+              <form method="post" action="/empresas/{{ eid }}/documentos/{{ d.id }}/eliminar"
+                    onsubmit="return confirm('¿Seguro que deseas eliminar este estado de cuenta y sus movimientos asociados? Si hubo un error al registrarlo, podrás volver a subirlo o re-mapearlo.');"
+                    class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit"
+                        title="Eliminar este estado de cuenta importado por error"
+                        class="px-2 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg text-xs font-semibold transition-colors">
+                  🗑️
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="px-5 py-12 text-center text-slate-400">
+            <div class="text-3xl mb-2">📂</div>
+            <div class="text-sm font-medium text-slate-600">Todavía no has importado ningún estado de cuenta.</div>
+            <div class="text-xs text-slate-400 mt-1">
+              Puedes descargar la plantilla de ejemplo o subir tu primer archivo de banco.
+            </div>
+            <div class="mt-4 flex justify-center gap-3">
+              <a href="/empresas/{{ eid }}/importar/descargar-plantilla" class="text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-1.5 rounded-lg shadow-sm">
+                Descargar Plantilla Excel
+              </a>
+              <a href="/empresas/{{ eid }}/importar" class="text-xs bg-orange-600 hover:bg-orange-700 text-white font-bold px-3 py-1.5 rounded-lg shadow-sm">
+                Importar Estado de Cuenta
+              </a>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- MODAL PARA VER Y EDITAR MOVIMIENTOS LEÍDOS -->
+<div id="modalMovimientos" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden animate-fadeIn">
+    <!-- Header Modal -->
+    <div class="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+      <div>
+        <h3 class="text-base font-bold text-marino-900 flex items-center gap-2">
+          <span>✏️</span> Movimientos extraídos del documento: <span id="modalDocNombre" class="text-orange-600 font-mono"></span>
+        </h3>
+        <p class="text-xs text-slate-500 mt-0.5">
+          Puedes corregir directamente cualquier fecha, descripción, importe o tipo si se leyó con errores en el banco.
+        </p>
+      </div>
+      <button onclick="cerrarModalMovimientos()" class="text-slate-400 hover:text-slate-600 text-xl font-bold p-1">
+        ✕
+      </button>
+    </div>
+
+    <!-- Contenido Modal -->
+    <div class="p-6 overflow-y-auto flex-1">
+      <div id="modalLoading" class="text-center py-12">
+        <div class="w-8 h-8 border-3 border-orange-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+        <div class="text-xs text-slate-500 font-medium">Cargando movimientos...</div>
+      </div>
+
+      <div id="modalTablaContainer" class="hidden overflow-x-auto border border-slate-200 rounded-xl">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="bg-slate-100 border-b border-slate-200 text-left text-slate-600">
+              <th class="px-3 py-2 font-semibold">Fecha</th>
+              <th class="px-3 py-2 font-semibold">Tipo</th>
+              <th class="px-3 py-2 font-semibold">Descripción / Concepto</th>
+              <th class="px-3 py-2 font-semibold">Importe ($)</th>
+              <th class="px-3 py-2 font-semibold">RFC Contraparte</th>
+              <th class="px-3 py-2 font-semibold">Referencia</th>
+              <th class="px-3 py-2 font-semibold text-center">Acción</th>
+            </tr>
+          </thead>
+          <tbody id="modalMovimientosTbody" class="divide-y divide-slate-100">
+            <!-- Filas dinámicas -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Footer Modal -->
+    <div class="px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+      <div id="modalStatusMsg" class="text-xs font-semibold text-slate-600"></div>
+      <button onclick="cerrarModalMovimientos()" class="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
+        Cerrar
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+const empresaId = {{ eid }};
+const csrfToken = "{{ csrf_token() }}";
+
+async function abrirModalMovimientos(documentoId, nombreArchivo) {
+  document.getElementById('modalDocNombre').textContent = nombreArchivo;
+  document.getElementById('modalLoading').classList.remove('hidden');
+  document.getElementById('modalTablaContainer').classList.add('hidden');
+  document.getElementById('modalStatusMsg').textContent = '';
+  document.getElementById('modalMovimientos').classList.remove('hidden');
+
+  try {
+    const resp = await fetch(`/empresas/${empresaId}/documentos/${documentoId}/movimientos-json`);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || 'No se pudieron cargar los movimientos');
+
+    renderizarMovimientosModal(data.movimientos);
+  } catch (err) {
+    document.getElementById('modalLoading').innerHTML = `<div class="text-red-600 font-semibold text-xs py-4">Error: ${err.message}</div>`;
+  }
+}
+
+function cerrarModalMovimientos() {
+  document.getElementById('modalMovimientos').classList.add('hidden');
+}
+
+function renderizarMovimientosModal(movimientos) {
+  const tbody = document.getElementById('modalMovimientosTbody');
+  tbody.innerHTML = '';
+
+  if (movimientos.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">No se encontraron movimientos registrados para este documento.</td></tr>`;
+  } else {
+    movimientos.forEach(m => {
+      const tr = document.createElement('tr');
+      tr.id = `fila-mov-${m.id}`;
+      tr.className = 'hover:bg-amber-50/40 transition-colors';
+      tr.innerHTML = `
+        <td class="px-3 py-2 whitespace-nowrap">
+          <input type="date" id="fecha-${m.id}" value="${m.fecha.substring(0, 10)}" class="border border-slate-300 rounded px-2 py-1 text-xs w-32 focus:ring-1 focus:ring-orange-500">
+        </td>
+        <td class="px-3 py-2 whitespace-nowrap">
+          <select id="tipo-${m.id}" class="border border-slate-300 rounded px-2 py-1 text-xs font-semibold ${m.tipo === 'ingreso' ? 'text-emerald-700 bg-emerald-50' : 'text-red-700 bg-red-50'}">
+            <option value="ingreso" ${m.tipo === 'ingreso' ? 'selected' : ''}>Ingreso (+)</option>
+            <option value="egreso" ${m.tipo === 'egreso' ? 'selected' : ''}>Egreso (-)</option>
+          </select>
+        </td>
+        <td class="px-3 py-2">
+          <input type="text" id="desc-${m.id}" value="${escapeHtml(m.descripcion)}" class="border border-slate-300 rounded px-2 py-1 text-xs w-full min-w-[200px] focus:ring-1 focus:ring-orange-500 font-mono">
+        </td>
+        <td class="px-3 py-2 whitespace-nowrap">
+          <input type="number" step="0.01" id="total-${m.id}" value="${m.total.toFixed(2)}" class="border border-slate-300 rounded px-2 py-1 text-xs w-28 text-right font-mono focus:ring-1 focus:ring-orange-500 font-bold">
+        </td>
+        <td class="px-3 py-2 whitespace-nowrap">
+          <input type="text" id="rfc-${m.id}" value="${escapeHtml(m.rfc_contraparte)}" placeholder="RFC..." maxlength="13" class="border border-slate-300 rounded px-2 py-1 text-xs w-28 uppercase font-mono focus:ring-1 focus:ring-orange-500">
+        </td>
+        <td class="px-3 py-2 whitespace-nowrap">
+          <input type="text" id="ref-${m.id}" value="${escapeHtml(m.referencia)}" placeholder="Ref..." class="border border-slate-300 rounded px-2 py-1 text-xs w-24 font-mono focus:ring-1 focus:ring-orange-500">
+        </td>
+        <td class="px-3 py-2 text-center whitespace-nowrap">
+          <button type="button" onclick="guardarMovimiento(${m.id})" id="btn-save-${m.id}" class="px-2.5 py-1 bg-orange-600 hover:bg-orange-700 text-white rounded font-bold text-xs shadow-2xs transition-all">
+            💾 Guardar
+          </button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('modalLoading').classList.add('hidden');
+  document.getElementById('modalTablaContainer').classList.remove('hidden');
+}
+
+async function guardarMovimiento(movimientoId) {
+  const btn = document.getElementById(`btn-save-${movimientoId}`);
+  const statusMsg = document.getElementById('modalStatusMsg');
+
+  const fecha = document.getElementById(`fecha-${movimientoId}`).value;
+  const tipo = document.getElementById(`tipo-${movimientoId}`).value;
+  const descripcion = document.getElementById(`desc-${movimientoId}`).value;
+  const total = document.getElementById(`total-${movimientoId}`).value;
+  const rfc_contraparte = document.getElementById(`rfc-${movimientoId}`).value;
+  const referencia = document.getElementById(`ref-${movimientoId}`).value;
+
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  try {
+    const resp = await fetch(`/empresas/${empresaId}/movimientos/${movimientoId}/editar`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrfToken,
+      },
+      body: JSON.stringify({
+        fecha, tipo, descripcion, total, rfc_contraparte, referencia
+      })
+    });
+
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.error || 'Error al guardar');
+
+    btn.className = 'px-2.5 py-1 bg-emerald-600 text-white rounded font-bold text-xs shadow-2xs transition-all';
+    btn.textContent = '✓ Guardado';
+    statusMsg.className = 'text-xs font-semibold text-emerald-700';
+    statusMsg.textContent = `Movimiento #${movimientoId} actualizado correctamente.`;
+
+    setTimeout(() => {
+      btn.className = 'px-2.5 py-1 bg-orange-600 hover:bg-orange-700 text-white rounded font-bold text-xs shadow-2xs transition-all';
+      btn.textContent = '💾 Guardar';
+      btn.disabled = false;
+    }, 2000);
+  } catch (err) {
+    alert('Error al actualizar movimiento: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = '💾 Guardar';
+  }
+}
+
+function escapeHtml(text) {
+  if (!text) return '';
+  return text.replace(/[&<>"']/g, function(m) {
+    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[m];
+  });
+}
+</script>
 {% endblock %}

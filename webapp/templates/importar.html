@@ -126,11 +126,35 @@
 </div>
 
 <!-- SUBIDA DE ESTADO DE CUENTA BANCARIO -->
-<div class="bg-white border border-slate-200 rounded-xl p-6 mb-8">
-  <div class="font-medium text-marino-900 mb-2">Estado de cuenta (Excel / PDF)</div>
-  <p class="text-xs text-slate-500 mb-4">
-    Sube el archivo de movimientos del banco. En la siguiente pantalla podrás validar qué columna corresponde a fecha, concepto e importes.
-  </p>
+<div class="bg-white border border-slate-200 rounded-xl p-6 mb-8 shadow-sm">
+  <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+    <div>
+      <div class="font-bold text-marino-900 text-base">Estado de cuenta (Excel / PDF)</div>
+      <p class="text-xs text-slate-500 mt-0.5">
+        Sube el archivo de movimientos del banco. En la siguiente pantalla podrás validar qué columna corresponde a fecha, concepto e importes.
+      </p>
+    </div>
+    <div class="flex items-center gap-2">
+      <a href="/empresas/{{ request.view_args.empresa_id }}/importar/descargar-plantilla"
+         class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors">
+        <span>📥</span> Descargar Plantilla Excel Ejemplo
+      </a>
+      <a href="/empresas/{{ request.view_args.empresa_id }}/documentos"
+         class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors">
+        <span>📂</span> Ver / Re-mapear Anteriores
+      </a>
+    </div>
+  </div>
+
+  <!-- Banner informativo sobre plantilla y re-mapeo -->
+  <div class="bg-blue-50/70 border border-blue-200 rounded-xl p-3.5 mb-5 text-xs text-blue-900 flex items-start gap-2.5">
+    <span class="text-base">💡</span>
+    <div>
+      <strong>¿Cómo deben ir idealmente los movimientos?</strong>
+      Se recomienda tener una columna para <strong>Fecha</strong>, una para <strong>Concepto / Descripción</strong>, y columnas separadas para <strong>Depósitos (Ingresos)</strong> y <strong>Retiros (Egresos)</strong>.
+      Si deseas ver la estructura modelo, descarga la <a href="/empresas/{{ request.view_args.empresa_id }}/importar/descargar-plantilla" class="underline font-bold text-blue-700">plantilla oficial en Excel</a>. Si te equivocaste al registrar qué columna es cuál, puedes re-mapear o editar lo que se leyó en cualquier momento desde <a href="/empresas/{{ request.view_args.empresa_id }}/documentos" class="underline font-bold text-blue-700">Documentos Importados</a>.
+    </div>
+  </div>
   <form method="post" action="/empresas/{{ request.view_args.empresa_id }}/importar/vista-previa" enctype="multipart/form-data" class="space-y-4">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div>

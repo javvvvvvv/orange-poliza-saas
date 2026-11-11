@@ -75,6 +75,24 @@ def importar(empresa_id):
     bancos = bancos_repo.listar_bancos(empresa_id)
     return render_template("importar.html", bancos=bancos)
 
+@importacion_bp.route("/empresas/<int:empresa_id>/importar/descargar-plantilla")
+@login_required
+@empresa_requerida
+def descargar_plantilla_ejemplo(empresa_id):
+    """
+    Descarga una plantilla modelo en Excel (.xlsx) con la estructura ideal de movimientos
+    y una pestaña de guía rápida de formatos.
+    """
+    import io
+    import plantilla_excel
+    b = plantilla_excel.generar_plantilla_excel_bytes()
+    return send_file(
+        io.BytesIO(b),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name="Plantilla_Estado_Cuenta_OrangePoliza.xlsx",
+    )
+
 @importacion_bp.route("/empresas/<int:empresa_id>/importar/vista-previa", methods=["GET", "POST"])
 @login_required
 @empresa_requerida
@@ -159,6 +177,13 @@ def importar_vista_previa(empresa_id):
         except Exception as e:
             flash(f"No se pudo usar esa fila como encabezado: {e}", "error")
 
+    documento_id_remap = request.args.get("documento_id_remap") or datos.get("documento_id_remap")
+    if documento_id_remap:
+        try:
+            documento_id_remap = int(documento_id_remap)
+        except (ValueError, TypeError):
+            documento_id_remap = None
+
     return render_template(
         "importar_preview.html",
         token=token, hojas=hojas, sugerencias=sugerencias if fila_autodetectada else {}, hoja_actual=hoja_actual,
@@ -170,6 +195,7 @@ def importar_vista_previa(empresa_id):
         formato_columnas=FORMATO_COLUMNAS_SEPARADAS,
         formato_signo=FORMATO_COLUMNA_CON_SIGNO,
         formato_tipo=FORMATO_VALOR_ABSOLUTO_Y_TIPO,
+        documento_id_remap=documento_id_remap,
     )
 
 @importacion_bp.route("/empresas/<int:empresa_id>/importar/confirmar", methods=["POST"])
@@ -217,6 +243,13 @@ def importar_confirmar(empresa_id):
     carpeta_empresa = os.path.join(UPLOADS_DIR, str(empresa_id))
     os.makedirs(carpeta_empresa, exist_ok=True)
 
+    documento_id_remap = request.form.get("documento_id_remap") or datos.get("documento_id_remap")
+    if documento_id_remap:
+        try:
+            documento_id_remap = int(documento_id_remap)
+        except (ValueError, TypeError):
+            documento_id_remap = None
+
     total_importados = total_automaticos = total_pendientes = 0
     errores = []
     todos_descuadres = []
@@ -227,10 +260,10 @@ def importar_confirmar(empresa_id):
 
         with get_connection() as con_chk:
             ya_importado = con_chk.execute(
-                "SELECT id, nombre_archivo FROM documentos_importados WHERE empresa_id = ? AND hash_sha256 = ?",
+                "SELECT id, nombre_archivo FROM documentos_importados WHERE empresa_id = %s AND hash_sha256 = %s",
                 (empresa_id, hash_sha256),
             ).fetchone()
-        if ya_importado:
+        if ya_importado and (not documento_id_remap or ya_importado["id"] != documento_id_remap):
             errores.append(f"El archivo '{os.path.basename(ruta_temporal)}' ya fue importado previamente (documento #{ya_importado['id']}).")
             continue
 
@@ -239,7 +272,8 @@ def importar_confirmar(empresa_id):
             os.path.basename(ruta_temporal),
             extensiones_permitidas=EXTENSIONES_ESTADO_CUENTA,
         )
-        _mover_archivo_con_reintentos(ruta_temporal, ruta_final)
+        if os.path.abspath(ruta_temporal) != os.path.abspath(ruta_final):
+            _mover_archivo_con_reintentos(ruta_temporal, ruta_final)
 
         try:
             if ruta_final.lower().endswith(".pdf"):
@@ -252,14 +286,35 @@ def importar_confirmar(empresa_id):
 
         con = get_connection()
         cur = con.cursor()
-        cur.execute(
-            """INSERT INTO documentos_importados
-               (empresa_id, banco_id, nombre_archivo, hash_sha256, ruta_archivo, nombre_hoja,
-                tipo_archivo, importado_por, estado)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'procesado')""",
-            (empresa_id, banco_id, os.path.basename(ruta_final), hash_sha256, ruta_final, nombre_hoja, 'pdf' if ruta_final.lower().endswith('.pdf') else 'excel', g.usuario["id"]),
-        )
-        documento_id = cur.lastrowid
+        if documento_id_remap:
+            documento_id = documento_id_remap
+            # Desvincular asociaciones anteriores para permitir relectura limpia
+            cur.execute("DELETE FROM cfdi_movimiento WHERE movimiento_id IN (SELECT id FROM movimientos WHERE documento_id = %s)", (documento_id,))
+            polizas_antiguas = cur.execute("SELECT DISTINCT poliza_id FROM movimientos WHERE documento_id = %s AND poliza_id IS NOT NULL", (documento_id,)).fetchall()
+            cur.execute("UPDATE movimientos SET poliza_id = NULL WHERE documento_id = %s", (documento_id,))
+            cur.execute("DELETE FROM movimientos WHERE documento_id = %s", (documento_id,))
+            for p_row in polizas_antiguas:
+                pid = p_row[0] if isinstance(p_row, (tuple, list)) else p_row["poliza_id"]
+                st = cur.execute("SELECT estado FROM polizas WHERE id = %s", (pid,)).fetchone()
+                if st and (st[0] if isinstance(st, (tuple, list)) else st["estado"]) != "exportada":
+                    cur.execute("DELETE FROM poliza_lineas WHERE poliza_id = %s", (pid,))
+                    cur.execute("DELETE FROM poliza_auditoria WHERE poliza_id = %s", (pid,))
+                    cur.execute("DELETE FROM polizas WHERE id = %s", (pid,))
+            cur.execute(
+                """UPDATE documentos_importados
+                   SET banco_id = %s, nombre_hoja = %s, hash_sha256 = %s, estado = 'procesado'
+                   WHERE id = %s""",
+                (banco_id, nombre_hoja, hash_sha256, documento_id)
+            )
+        else:
+            cur.execute(
+                """INSERT INTO documentos_importados
+                   (empresa_id, banco_id, nombre_archivo, hash_sha256, ruta_archivo, nombre_hoja,
+                    tipo_archivo, importado_por, estado)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'procesado') RETURNING id""",
+                (empresa_id, banco_id, os.path.basename(ruta_final), hash_sha256, ruta_final, nombre_hoja, 'pdf' if ruta_final.lower().endswith('.pdf') else 'excel', g.usuario["id"]),
+            )
+            documento_id = cur.fetchone()[0]
         con.commit()
         con.close()
 
@@ -285,8 +340,9 @@ def importar_confirmar(empresa_id):
     shutil.rmtree(carpeta_temporal, ignore_errors=True)
 
     msg_dup = f" ({total_duplicados} omitidos por ya existir)" if total_duplicados > 0 else ""
+    msg_remap = " ✅ ¡Mapeo re-procesado y actualizado con éxito!" if documento_id_remap else ""
     flash(
-        f"{total_importados} movimientos procesados{msg_dup}. {total_automaticos} clasificados "
+        f"{total_importados} movimientos procesados{msg_dup}.{msg_remap} {total_automaticos} clasificados "
         f"automáticamente, {total_pendientes} pendientes de revisión.",
         "exito",
     )

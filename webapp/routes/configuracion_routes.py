@@ -9,7 +9,7 @@ import os
 import uuid
 import tempfile
 import shutil
-from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for, send_file, send_from_directory
+from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for, send_file, send_from_directory, jsonify
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from auth import (
@@ -471,6 +471,174 @@ def documento_marcado(empresa_id, documento_id):
         flash("Ningún movimiento de este documento tiene póliza generada todavía.", "error")
 
     return send_file(ruta, as_attachment=True, download_name=os.path.basename(ruta))
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/documentos/<int:documento_id>/remap")
+@login_required
+@empresa_requerida
+def documento_remap(empresa_id, documento_id):
+    """
+    Permite volver a abrir el asistente de lectura de columnas para un documento ya importado,
+    corrigiendo errores de mapeo (ej. si se leyó columna equivocada de ingreso/egreso o encabezado).
+    """
+    with get_connection() as con:
+        doc = con.execute(
+            "SELECT * FROM documentos_importados WHERE id = %s AND empresa_id = %s",
+            (documento_id, empresa_id)
+        ).fetchone()
+
+    if not doc:
+        flash("El documento no existe.", "error")
+        return redirect(url_for("configuracion.documentos", empresa_id=empresa_id))
+
+    ruta_archivo = doc["ruta_archivo"]
+    if not ruta_archivo or not os.path.exists(ruta_archivo):
+        # Fallback a carpeta uploads/{empresa_id}/
+        ruta_alt = os.path.join(UPLOADS_DIR, str(empresa_id), doc["nombre_archivo"])
+        if os.path.exists(ruta_alt):
+            ruta_archivo = ruta_alt
+        else:
+            flash(f"El archivo original '{doc['nombre_archivo']}' ya no se encuentra en el servidor. Puedes volver a subirlo.", "error")
+            return redirect(url_for("configuracion.documentos", empresa_id=empresa_id))
+
+    token = uuid.uuid4().hex
+    carpeta_temporal = os.path.join(UPLOADS_DIR, "_tmp", token)
+    os.makedirs(carpeta_temporal, exist_ok=True)
+    ruta_copia = os.path.join(carpeta_temporal, doc["nombre_archivo"])
+    shutil.copy2(ruta_archivo, ruta_copia)
+
+    session[f"preview_{token}"] = {
+        "archivos": [ruta_copia],
+        "banco_id": doc["banco_id"],
+        "documento_id_remap": documento_id,
+    }
+
+    return redirect(url_for("importacion.importar_vista_previa", empresa_id=empresa_id, token=token, documento_id_remap=documento_id))
+
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/documentos/<int:documento_id>/eliminar", methods=["POST"])
+@login_required
+@empresa_requerida
+def documento_eliminar(empresa_id, documento_id):
+    """
+    Elimina un documento importado por error junto con sus movimientos y asociaciones.
+    Libera el hash para permitir volver a subir el archivo desde cero si se desea.
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        doc = cur.execute(
+            "SELECT * FROM documentos_importados WHERE id = %s AND empresa_id = %s",
+            (documento_id, empresa_id)
+        ).fetchone()
+
+        if not doc:
+            flash("El documento no existe.", "error")
+            return redirect(url_for("configuracion.documentos", empresa_id=empresa_id))
+
+        # 1. Eliminar asociaciones de CFDI de los movimientos de este documento
+        cur.execute("DELETE FROM cfdi_movimiento WHERE movimiento_id IN (SELECT id FROM movimientos WHERE documento_id = %s)", (documento_id,))
+
+        # 2. Desvincular y eliminar pólizas borradores
+        polizas_antiguas = cur.execute("SELECT DISTINCT poliza_id FROM movimientos WHERE documento_id = %s AND poliza_id IS NOT NULL", (documento_id,)).fetchall()
+        cur.execute("UPDATE movimientos SET poliza_id = NULL WHERE documento_id = %s", (documento_id,))
+        for p_row in polizas_antiguas:
+            pid = p_row[0] if isinstance(p_row, (tuple, list)) else p_row["poliza_id"]
+            st = cur.execute("SELECT estado FROM polizas WHERE id = %s", (pid,)).fetchone()
+            if st and (st[0] if isinstance(st, (tuple, list)) else st["estado"]) != "exportada":
+                cur.execute("DELETE FROM poliza_lineas WHERE poliza_id = %s", (pid,))
+                cur.execute("DELETE FROM poliza_auditoria WHERE poliza_id = %s", (pid,))
+                cur.execute("DELETE FROM polizas WHERE id = %s", (pid,))
+
+        # 3. Eliminar movimientos
+        cur.execute("DELETE FROM movimientos WHERE documento_id = %s", (documento_id,))
+
+        # 4. Eliminar registro del documento
+        cur.execute("DELETE FROM documentos_importados WHERE id = %s", (documento_id,))
+        con.commit()
+
+    # 5. Eliminar archivo físico de uploads si existe
+    try:
+        if doc.get("ruta_archivo") and os.path.exists(doc["ruta_archivo"]):
+            os.remove(doc["ruta_archivo"])
+    except OSError:
+        pass
+
+    flash(f"Documento '{doc['nombre_archivo']}' y sus movimientos fueron eliminados correctamente.", "exito")
+    return redirect(url_for("configuracion.documentos", empresa_id=empresa_id))
+
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/documentos/<int:documento_id>/movimientos-json")
+@login_required
+@empresa_requerida
+def documento_movimientos_json(empresa_id, documento_id):
+    """
+    Retorna en JSON los movimientos leídos de un documento para inspección y edición inline.
+    """
+    with get_connection() as con:
+        movs = con.execute(
+            """SELECT id, fecha, descripcion, tipo, total, rfc_contraparte, referencia_bancaria,
+                      estado_clasificacion, poliza_id
+               FROM movimientos
+               WHERE empresa_id = %s AND documento_id = %s
+               ORDER BY id ASC""",
+            (empresa_id, documento_id)
+        ).fetchall()
+
+    return jsonify({
+        "ok": True,
+        "movimientos": [
+            {
+                "id": m["id"],
+                "fecha": str(m["fecha"]),
+                "descripcion": m["descripcion"] or "",
+                "tipo": m["tipo"] or "",
+                "total": float(m["total"] or 0),
+                "rfc_contraparte": m["rfc_contraparte"] or "",
+                "referencia": m["referencia_bancaria"] or "",
+                "estado": m["estado_clasificacion"] or "pendiente",
+                "poliza_id": m["poliza_id"],
+            }
+            for m in movs
+        ]
+    })
+
+
+@configuracion_bp.route("/empresas/<int:empresa_id>/movimientos/<int:movimiento_id>/editar", methods=["POST"])
+@login_required
+@empresa_requerida
+def movimiento_editar(empresa_id, movimiento_id):
+    """
+    Permite editar directamente los valores leídos de un movimiento bancario
+    (fecha, descripción, tipo ingreso/egreso, monto, RFC y referencia).
+    """
+    datos = request.get_json(silent=True) or {}
+    fecha = datos.get("fecha")
+    descripcion = (datos.get("descripcion") or "").strip()
+    tipo = (datos.get("tipo") or "").strip().lower()
+    total = datos.get("total")
+    rfc = (datos.get("rfc_contraparte") or "").strip().upper()
+    referencia = (datos.get("referencia") or "").strip()
+
+    if not fecha or not descripcion or tipo not in ("ingreso", "egreso") or total is None:
+        return jsonify({"ok": False, "error": "Datos incompletos o tipo inválido (debe ser ingreso o egreso)."}), 400
+
+    try:
+        total_float = float(total)
+        if total_float < 0:
+            return jsonify({"ok": False, "error": "El importe debe ser un valor positivo."}), 400
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "Importe numérico inválido."}), 400
+
+    with get_connection() as con:
+        con.execute(
+            """UPDATE movimientos
+               SET fecha = %s, descripcion = %s, descripcion_normalizada = %s,
+                   tipo = %s, total = %s, rfc_contraparte = %s, referencia_bancaria = %s
+               WHERE id = %s AND empresa_id = %s""",
+            (fecha, descripcion, descripcion.upper(), tipo, total_float, rfc or None, referencia or None, movimiento_id, empresa_id)
+        )
+        con.commit()
+
+    return jsonify({"ok": True, "mensaje": "Movimiento actualizado exitosamente."})
 
 # --- Conciliaciones de CFDI sugeridas y confirmadas ---
 
