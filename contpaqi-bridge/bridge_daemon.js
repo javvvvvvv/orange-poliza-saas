@@ -14,9 +14,17 @@ const dllPath = path.join(__dirname, 'bin', 'Debug', 'net10.0', 'ContpaqiBridge.
 console.log(`[Bridge Daemon] Iniciando ContpaqiBridge con: ${dotnetPath}`);
 console.log(`[Bridge Daemon] DLL: ${dllPath}`);
 
+const cleanEnv = { ...process.env };
+for (const k of Object.keys(cleanEnv)) {
+  if (k.startsWith('ANTIGRAVITY_')) {
+    delete cleanEnv[k];
+  }
+}
+
 const child = spawn(dotnetPath, [dllPath, '--urls', 'http://0.0.0.0:5005'], {
   cwd: __dirname,
-  stdio: 'inherit'
+  stdio: 'inherit',
+  env: cleanEnv
 });
 
 child.on('error', (err) => {
