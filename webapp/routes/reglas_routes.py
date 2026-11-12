@@ -223,12 +223,13 @@ def pendientes_siguiente(empresa_id):
             (movimiento["id"],),
         ).fetchall()
 
-        # Deduplicar por id para garantizar que jamás aparezca un CFDI duplicado
+        # Deduplicar estrictamente por UUID o ID para garantizar que jamás aparezca un CFDI duplicado
         cfdis_vistos = set()
         cfdis_asociados = []
         for c in cfdis_raw:
-            if c["id"] not in cfdis_vistos:
-                cfdis_vistos.add(c["id"])
+            key_u = (c["uuid"] or "").strip().upper() or str(c["id"])
+            if key_u not in cfdis_vistos:
+                cfdis_vistos.add(key_u)
                 cfdis_asociados.append(c)
 
         cfdi_info = None
@@ -412,7 +413,12 @@ def pendiente_asignar_rapido(empresa_id, movimiento_id):
     else:
         kwargs["palabras_clave"] = [sugerencia.valor_coincidencia]
 
-    repo.crear_regla(**kwargs)
+    regla_id = repo.crear_regla(**kwargs)
+    with get_connection() as con:
+        con.execute(
+            "UPDATE movimientos SET regla_id = ?, estado_clasificacion = 'manual' WHERE id = ? AND empresa_id = ?",
+            (regla_id, movimiento_id, empresa_id),
+        )
     try:
         from asociacion_repo import asociar_automaticamente
         asociar_automaticamente(empresa_id)

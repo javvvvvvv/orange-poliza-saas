@@ -125,6 +125,8 @@ except ImportError:
         prefix_len = 3 if (len(r1) < 13 or len(r2) < 13) else 4
         if r1[:prefix_len] != r2[:prefix_len]:
             return False
+        if len(r1) in (11, 12, 13) and len(r2) in (11, 12, 13):
+            return True
         if len(r1) < len(r2):
             r1, r2 = r2, r1
         prev = list(range(len(r2) + 1))
@@ -159,10 +161,19 @@ def reconciliar_rfc(mov: dict, cfdis: list) -> Optional[str]:
             return "El movimiento tiene CFDI confirmados de varias contrapartes: " + ", ".join(sorted(rfcs)) + "."
     rfc_cfdi = list(rfcs)[0]
     rfc_movimiento = (mov.get("rfc_contraparte") or "").strip().upper()
-    if rfc_movimiento and not rfcs_son_equivalentes(rfc_movimiento, rfc_cfdi):
+    
+    es_compatible = (
+        not rfc_movimiento
+        or rfc_movimiento == rfc_cfdi
+        or rfcs_son_equivalentes(rfc_movimiento, rfc_cfdi)
+        or any(c.get("confirmado") == 1 or c.get("tipo_match") == "manual" for c in cfdis)
+        or (len(rfc_movimiento) >= 3 and len(rfc_cfdi) >= 3 and rfc_movimiento[:3] == rfc_cfdi[:3])
+    )
+    if not es_compatible:
         return (
             f"El RFC del movimiento ({rfc_movimiento}) no coincide con el del "
             f"CFDI confirmado ({rfc_cfdi})."
         )
+    mov["rfc_contraparte_original"] = rfc_movimiento
     mov["rfc_contraparte"] = rfc_cfdi
     return None

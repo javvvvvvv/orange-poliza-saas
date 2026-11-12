@@ -103,6 +103,18 @@ def clasificar_pendientes(empresa_id):
                 incidencias.append(_info_descuadre(mov, match.regla.nombre, resultado))
                 continue
 
+            # Requerimiento: Si un movimiento coincide con una regla pero NO tiene CFDI asociado,
+            # NO clasificarlo en 'automatico'. Debe quedarse en 'sugerido' para que el asistente
+            # de pendientes le pregunte al usuario y pueda adjuntar su CFDI antes de cerrarlo.
+            if not cfdis:
+                con.execute(
+                    """UPDATE movimientos
+                       SET regla_id = ?, confianza_clasificacion = ?, estado_clasificacion = 'sugerido'
+                       WHERE id = ? AND empresa_id = ?""",
+                    (match.regla.id, match.confianza, fila["id"], empresa_id),
+                )
+                continue
+
             con.execute(
                 """UPDATE movimientos
                    SET regla_id = ?, confianza_clasificacion = ?, estado_clasificacion = 'automatico'

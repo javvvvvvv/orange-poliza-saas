@@ -864,7 +864,12 @@ def movimiento_cfdis_asociados_json(empresa_id, movimiento_id):
         ).fetchall()
 
         resultado = []
+        cfdis_vistos = set()
         for r in rows:
+            key_u = (r["uuid"] or "").strip().upper() or str(r["id"])
+            if key_u in cfdis_vistos:
+                continue
+            cfdis_vistos.add(key_u)
             contraparte_rfc = r["rfc_receptor"] if r["rfc_emisor"] == rfc_empresa else r["rfc_emisor"]
             contraparte_nombre = r["nombre_receptor"] if r["rfc_emisor"] == rfc_empresa else r["nombre_emisor"]
             resultado.append({

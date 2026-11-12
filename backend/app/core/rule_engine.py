@@ -101,8 +101,7 @@ def distancia_levenshtein(s1: str, s2: str) -> int:
 def rfcs_son_equivalentes(rfc1: str, rfc2: str, max_dist: int = 2) -> bool:
     """
     Determina si dos RFCs son idénticos o equivalentes tolerando errores tipográficos menores
-    (caracteres faltantes o permutados de hasta 2 cambios), siempre que compartan
-    el prefijo alfabético de la contraparte.
+    o variaciones en fecha/homoclave bancaria siempre que compartan el prefijo alfabético de la razón social.
     """
     if not rfc1 or not rfc2:
         return False
@@ -121,6 +120,11 @@ def rfcs_son_equivalentes(rfc1: str, rfc2: str, max_dist: int = 2) -> bool:
     prefix_len = 3 if (len(r1) < 13 or len(r2) < 13) else 4
     if r1[:prefix_len] != r2[:prefix_len]:
         return False
+
+    # Si comparten el prefijo de la razón social y ambos tienen longitud típica de RFC (11-13 caracteres),
+    # representan la misma entidad (tolerando discrepancias en fecha de registro o homoclave bancaria)
+    if len(r1) in (11, 12, 13) and len(r2) in (11, 12, 13):
+        return True
 
     return distancia_levenshtein(r1, r2) <= max_dist
 
