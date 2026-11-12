@@ -372,6 +372,19 @@
       </button>
     </div>
 
+    <!-- SECCIÓN DE FACTURAS VINCULADAS / SELECCIONADAS -->
+    <div id="modal-asoc-seleccionadas-bloque" class="px-4 py-2.5 bg-emerald-50/90 border-b border-emerald-200">
+      <div class="flex items-center justify-between mb-1.5">
+        <span class="text-xs font-bold text-emerald-900 flex items-center gap-1.5">
+          <span>📎</span> Facturas seleccionadas para este movimiento (<span id="modal-asoc-chip-count">0</span>):
+        </span>
+        <span class="text-xs font-mono font-bold text-emerald-800" id="modal-asoc-chip-total">Total: $0.00</span>
+      </div>
+      <div id="modal-asoc-chips-contenedor" class="flex flex-wrap gap-1.5 min-h-[26px] items-center text-xs">
+        <!-- Chips dinámicos -->
+      </div>
+    </div>
+
     <div id="modal-asoc-anticipo-banner" class="hidden mx-4 mt-3 p-3 bg-amber-100 border border-amber-300 rounded-lg text-amber-900 text-xs shadow-xs">
       <div class="font-bold flex items-center gap-1.5 mb-0.5">
         <span class="text-amber-700 font-bold">⚡</span> Factura de Mes Posterior Detectada (Anticipo Automático)
@@ -406,10 +419,67 @@ const movFecha = "{{ movimiento.fecha }}";
 const csrfToken = "{{ csrf_token() }}";
 let debounceTimer = null;
 
+// Mapa persistente de facturas seleccionadas para este movimiento: id -> obj
+const cfdisSeleccionadosMap = new Map();
+
+{% if cfdis_asociados %}
+{% for c in cfdis_asociados %}
+cfdisSeleccionadosMap.set({{ c.id }}, {
+    id: {{ c.id }},
+    folio: "{{ c.folio or '' }}",
+    serie: "{{ c.serie or '' }}",
+    total: {{ c.total or 0 }},
+    fecha: "{{ c.fecha or '' }}",
+    contraparte_rfc: "{{ c.rfc_emisor if movimiento.tipo == 'egreso' else c.rfc_receptor }}",
+    contraparte_nombre: "{{ c.nombre_emisor if movimiento.tipo == 'egreso' else c.nombre_receptor }}"
+});
+{% endfor %}
+{% endif %}
+
+function renderChipsSeleccionados() {
+    const contenedor = document.getElementById('modal-asoc-chips-contenedor');
+    const badgeCount = document.getElementById('modal-asoc-chip-count');
+    const badgeTotal = document.getElementById('modal-asoc-chip-total');
+    if (!contenedor) return;
+
+    if (cfdisSeleccionadosMap.size === 0) {
+        contenedor.innerHTML = '<span class="text-slate-400 text-[11px] italic">No hay facturas seleccionadas. Busca y marca las facturas abajo para agregarlas.</span>';
+        if (badgeCount) badgeCount.innerText = '0';
+        if (badgeTotal) badgeTotal.innerText = 'Total: $0.00';
+        actualizarContadorDirecto();
+        return;
+    }
+
+    let html = '';
+    let suma = 0;
+    cfdisSeleccionadosMap.forEach((c, id) => {
+        suma += (c.total || 0);
+        html += `
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-emerald-300 rounded-lg text-emerald-950 font-medium text-[11px] shadow-xs">
+          <span class="font-bold font-mono">${c.serie || ''}${c.folio || 'S/F'}</span>
+          <span class="font-mono text-emerald-700 font-bold">$${c.total.toFixed(2)}</span>
+          <button type="button" onclick="quitarChipCfdi(${id})" class="text-rose-500 hover:text-rose-700 font-bold ml-1 text-xs" title="Quitar de la selección">✕</button>
+        </span>`;
+    });
+
+    contenedor.innerHTML = html;
+    if (badgeCount) badgeCount.innerText = cfdisSeleccionadosMap.size;
+    if (badgeTotal) badgeTotal.innerText = `Total: $${suma.toFixed(2)}`;
+    actualizarContadorDirecto();
+}
+
+function quitarChipCfdi(id) {
+    cfdisSeleccionadosMap.delete(id);
+    const chk = document.querySelector(`.cfdi-chk[value="${id}"]`);
+    if (chk) chk.checked = false;
+    renderChipsSeleccionados();
+}
+
 function abrirModalAsociarDirecto() {
     const m = document.getElementById('modal-asociar-cfdi');
     m.classList.remove('hidden');
     m.classList.add('flex');
+    renderChipsSeleccionados();
     cargarCfdisDirecto();
 }
 
@@ -443,16 +513,18 @@ async function cargarCfdisDirecto() {
         data.cfdis.forEach(c => {
             const cFecha = (c.fecha || '').trim();
             const esPosterior = cFecha && movFecha && (cFecha.substring(0, 7) > movFecha.substring(0, 7));
+            const estaSeleccionado = cfdisSeleccionadosMap.has(c.id);
             html += `
-            <div class="p-3 rounded-lg border ${c.ya_asociado ? 'bg-emerald-50/70 border-emerald-300' : (esPosterior ? 'bg-amber-50/70 border-amber-300' : 'bg-white border-slate-200')} hover:border-orange-300 transition-colors flex items-center justify-between gap-3">
+            <div class="p-3 rounded-lg border ${estaSeleccionado ? 'bg-emerald-50/70 border-emerald-300' : (esPosterior ? 'bg-amber-50/70 border-amber-300' : 'bg-white border-slate-200')} hover:border-orange-300 transition-colors flex items-center justify-between gap-3">
               <div class="flex items-center gap-3">
                 <input type="checkbox" value="${c.id}" data-rfc="${c.contraparte_rfc || ''}" data-nombre="${c.contraparte_nombre || ''}" data-fecha="${cFecha}"
-                       class="cfdi-chk w-4 h-4 text-orange-600 rounded" ${c.ya_asociado ? 'checked' : ''} onchange="onCfdiChkChanged(this)">
+                       data-serie="${c.serie || ''}" data-folio="${c.folio || ''}" data-total="${c.total || 0}"
+                       class="cfdi-chk w-4 h-4 text-orange-600 rounded" ${estaSeleccionado ? 'checked' : ''} onchange="onCfdiChkChanged(this)">
                 <div>
                   <div class="font-bold text-slate-900 flex items-center gap-2">
                     <span class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">${c.serie}${c.folio || 'S/F'}</span>
                     <span class="text-slate-600 font-medium text-[11px]">${c.contraparte_nombre || c.contraparte_rfc}</span>
-                    ${c.ya_asociado ? '<span class="text-[10px] bg-emerald-600 text-white font-bold px-1.5 py-0.2 rounded">YA ASOCIADA</span>' : ''}
+                    ${estaSeleccionado ? '<span class="text-[10px] bg-emerald-600 text-white font-bold px-1.5 py-0.2 rounded">VINCULADA</span>' : ''}
                     ${esPosterior ? '<span class="text-[10px] bg-amber-600 text-white font-bold px-1.5 py-0.2 rounded">⚡ MES POSTERIOR (ANTICIPO)</span>' : ''}
                   </div>
                   <div class="text-[11px] text-slate-500 font-mono mt-0.5">
@@ -474,12 +546,24 @@ async function cargarCfdisDirecto() {
 }
 
 function onCfdiChkChanged(chk) {
-    actualizarContadorDirecto();
+    const id = parseInt(chk.value);
     if (chk.checked) {
+        cfdisSeleccionadosMap.set(id, {
+            id: id,
+            serie: chk.getAttribute('data-serie') || '',
+            folio: chk.getAttribute('data-folio') || '',
+            total: parseFloat(chk.getAttribute('data-total') || 0),
+            fecha: chk.getAttribute('data-fecha') || '',
+            contraparte_rfc: chk.getAttribute('data-rfc') || '',
+            contraparte_nombre: chk.getAttribute('data-nombre') || ''
+        });
         const rfc = chk.getAttribute('data-rfc') || '';
         const nom = chk.getAttribute('data-nombre') || '';
         sugerirContraCuentaModal(rfc, nom);
+    } else {
+        cfdisSeleccionadosMap.delete(id);
     }
+    renderChipsSeleccionados();
 }
 
 async function sugerirContraCuentaModal(rfc, nombre) {
@@ -497,13 +581,15 @@ async function sugerirContraCuentaModal(rfc, nombre) {
 }
 
 function actualizarContadorDirecto() {
-    const chks = document.querySelectorAll('.cfdi-chk:checked');
-    document.getElementById('modal-asoc-contador').innerText = `${chks.length} factura(s) seleccionada(s)`;
+    const badge = document.getElementById('modal-asoc-contador');
+    if (badge) {
+        badge.innerText = `${cfdisSeleccionadosMap.size} factura(s) seleccionada(s)`;
+    }
 
     // Detectar si alguna factura seleccionada es de mes posterior
     let hayMesPosterior = false;
-    chks.forEach(chk => {
-        const f = (chk.getAttribute('data-fecha') || '').trim();
+    cfdisSeleccionadosMap.forEach(c => {
+        const f = (c.fecha || '').trim();
         if (f && movFecha && f.substring(0, 7) > movFecha.substring(0, 7)) {
             hayMesPosterior = true;
         }
@@ -520,9 +606,9 @@ function actualizarContadorDirecto() {
 }
 
 async function guardarAsociacionDirecto() {
-    const chks = Array.from(new Set(Array.from(document.querySelectorAll('.cfdi-chk:checked')).map(c => parseInt(c.value))));
+    const chks = Array.from(cfdisSeleccionadosMap.keys());
     if (chks.length === 0) {
-        alert("Selecciona al menos una factura CFDI.");
+        alert("Selecciona al menos una factura CFDI para asociar.");
         return;
     }
 
@@ -540,17 +626,16 @@ async function guardarAsociacionDirecto() {
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
             body: JSON.stringify({
                 cfdi_ids: chks,
-                cuenta_contraparte: contraCuenta
+                cuenta_contraparte: contraCuenta,
+                modo: 'reemplazar'
             })
         });
         const res = await resp.json();
         if (res.ok) {
             if (res.es_anticipo) {
-                alert("✓ Factura de mes posterior asociada exitosamente como ANTICIPO.\n\n" + (res.mensaje || "Se generaron automáticamente la Póliza de Anticipo y la Póliza de Diario de Aplicación."));
-                window.location.href = `/empresas/${empresaId}/pendientes?movimiento_id=${movimientoId}`;
-            } else {
-                window.location.reload();
+                alert("✓ Factura asociada exitosamente como ANTICIPO.\n\n" + (res.mensaje || "Se generaron automáticamente la Póliza de Anticipo y la Póliza de Diario de Aplicación."));
             }
+            window.location.href = `/empresas/${empresaId}/pendientes?movimiento_id=${movimientoId}`;
         } else {
             alert("Error: " + (res.error || "No se pudo asociar."));
             if (btn) {
@@ -577,7 +662,7 @@ async function desasociarUnCfdi(cfdiId) {
         });
         const res = await resp.json();
         if (res.ok) {
-            window.location.reload();
+            window.location.href = `/empresas/${empresaId}/pendientes?movimiento_id=${movimientoId}`;
         } else {
             alert("Error al desvincular.");
         }

@@ -840,27 +840,67 @@ def cfdi_detalle_json(empresa_id, cfdi_id):
     })
 
 
+@configuracion_bp.route("/empresas/<int:empresa_id>/movimientos/<int:movimiento_id>/cfdis-asociados-json")
+@login_required
+@empresa_requerida
+def movimiento_cfdis_asociados_json(empresa_id, movimiento_id):
+    """
+    Devuelve la lista de facturas CFDI (XML) actualmente asociadas y confirmadas a un movimiento bancario.
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        empresa = cur.execute("SELECT rfc FROM empresas WHERE id = %s", (empresa_id,)).fetchone()
+        rfc_empresa = (empresa["rfc"] if empresa else "") or ""
+
+        rows = cur.execute(
+            """SELECT c.id, c.uuid, c.serie, c.folio, c.fecha, c.total,
+                      c.rfc_emisor, c.nombre_emisor, c.rfc_receptor, c.nombre_receptor,
+                      cm.importe_aplicado
+               FROM cfdi_movimiento cm
+               JOIN cfdis c ON c.id = cm.cfdi_id
+               WHERE cm.movimiento_id = %s AND cm.confirmado = 1
+               ORDER BY c.fecha ASC, c.id ASC""",
+            (movimiento_id,)
+        ).fetchall()
+
+        resultado = []
+        for r in rows:
+            contraparte_rfc = r["rfc_receptor"] if r["rfc_emisor"] == rfc_empresa else r["rfc_emisor"]
+            contraparte_nombre = r["nombre_receptor"] if r["rfc_emisor"] == rfc_empresa else r["nombre_emisor"]
+            resultado.append({
+                "id": r["id"],
+                "uuid": r["uuid"],
+                "serie": r["serie"] or "",
+                "folio": r["folio"] or "",
+                "fecha": str(r["fecha"]),
+                "total": float(r["total"] or 0.0),
+                "importe_aplicado": float(r["importe_aplicado"] or 0.0),
+                "contraparte_rfc": contraparte_rfc or "",
+                "contraparte_nombre": contraparte_nombre or "",
+            })
+
+    return jsonify({"ok": True, "cfdis": resultado})
+
+
 @configuracion_bp.route("/empresas/<int:empresa_id>/movimientos/<int:movimiento_id>/asociar-cfdi", methods=["POST"])
 @login_required
 @empresa_requerida
 def movimiento_asociar_cfdi(empresa_id, movimiento_id):
     """
     Asocia manualmente una o varias facturas CFDI (XML) seleccionadas por el usuario a un movimiento.
+    Por defecto opera en modo 'agregar' para permitir asociar facturas de una en una sin reemplazar
+    ni borrar las previamente vinculadas. Si se envía modo='reemplazar', actualiza la lista al conjunto enviado.
     Si se proporciona una cuenta_contraparte, la asigna y actualiza el asiento contable.
-    Si NO se proporciona, el movimiento permanece pendiente para que el usuario capture la contra-cuenta
-    sin ser saltado como cuadrado prematuramente.
     """
     datos = request.get_json(silent=True) or {}
     cfdi_ids = datos.get("cfdi_ids") or []
     cuenta_contraparte = (datos.get("cuenta_contraparte") or "").strip()
     cuenta_anticipo = (datos.get("cuenta_anticipo") or "").strip()
+    modo = (datos.get("modo") or "agregar").strip().lower()  # 'agregar' o 'reemplazar'
 
     if isinstance(cfdi_ids, (int, str)):
         cfdi_ids = [int(cfdi_ids)]
     cfdi_ids = list(dict.fromkeys(int(cid) for cid in cfdi_ids if str(cid).isdigit()))
-
-    if not cfdi_ids:
-        return jsonify({"ok": False, "error": "Selecciona al menos una factura CFDI para asociar."}), 400
 
     with get_connection() as con:
         cur = con.cursor()
@@ -874,6 +914,18 @@ def movimiento_asociar_cfdi(empresa_id, movimiento_id):
         empresa = cur.execute("SELECT * FROM empresas WHERE id = %s", (empresa_id,)).fetchone()
         rfc_empresa = (empresa["rfc"] if empresa else "") or ""
 
+        # En modo 'agregar', conservar las facturas que ya estaban confirmadas en este movimiento
+        if modo != "reemplazar":
+            existentes_res = cur.execute(
+                "SELECT cfdi_id FROM cfdi_movimiento WHERE movimiento_id = %s AND confirmado = 1",
+                (movimiento_id,)
+            ).fetchall()
+            ids_existentes = [r["cfdi_id"] for r in existentes_res]
+            cfdi_ids = list(dict.fromkeys(ids_existentes + cfdi_ids))
+
+        if not cfdi_ids:
+            return jsonify({"ok": False, "error": "Selecciona al menos una factura CFDI para asociar."}), 400
+
         placeholders = ",".join(["%s"] * len(cfdi_ids))
         cfdis_raw = cur.execute(
             f"SELECT * FROM cfdis WHERE id IN ({placeholders}) AND empresa_id = %s ORDER BY fecha ASC, id ASC",
@@ -883,24 +935,25 @@ def movimiento_asociar_cfdi(empresa_id, movimiento_id):
         if not cfdis_raw:
             return jsonify({"ok": False, "error": "No se encontraron las facturas indicadas."}), 404
 
-        # Deduplicar facturas para que no existan dos CFDIs con la misma serie y folio en este movimiento
+        # Deduplicar por UUID o ID para no repetir la misma factura
         cfdis = []
-        folios_unicos = set()
+        uuids_unicos = set()
         for c in cfdis_raw:
-            key_f = f"{(c['serie'] or '').strip().upper()}_{(c['folio'] or '').strip().upper()}"
-            if key_f and key_f in folios_unicos:
+            key_u = (c["uuid"] or "").strip().upper() or str(c["id"])
+            if key_u in uuids_unicos:
                 continue
-            if key_f:
-                folios_unicos.add(key_f)
+            uuids_unicos.add(key_u)
             cfdis.append(c)
 
-        # Limpiar asociaciones previas de este movimiento que ya NO estén en la selección actual
-        cfdi_ids_validos = [c["id"] for c in cfdis]
-        placeholders_validos = ",".join(["%s"] * len(cfdi_ids_validos))
-        cur.execute(
-            f"DELETE FROM cfdi_movimiento WHERE movimiento_id = %s AND cfdi_id NOT IN ({placeholders_validos})",
-            tuple([movimiento_id] + cfdi_ids_validos)
-        )
+        # Si se especificó explícitamente modo 'reemplazar', desvincular las que el usuario desmarcó
+        if modo == "reemplazar":
+            cfdi_ids_validos = [c["id"] for c in cfdis]
+            if cfdi_ids_validos:
+                placeholders_validos = ",".join(["%s"] * len(cfdi_ids_validos))
+                cur.execute(
+                    f"DELETE FROM cfdi_movimiento WHERE movimiento_id = %s AND cfdi_id NOT IN ({placeholders_validos})",
+                    tuple([movimiento_id] + cfdi_ids_validos)
+                )
 
         saldo_mov = float(mov["total"] or 0.0)
         grupo_id = uuid.uuid4().hex
