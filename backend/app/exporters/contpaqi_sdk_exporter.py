@@ -73,7 +73,7 @@ def exportar_polizas_via_sdk(movimientos_poliza, nombre_interno_empresa: str) ->
         for linea in mov.lineas:
             p["movimientos"].append({
                 "cuenta": str(linea.cuenta).replace("-", ""),
-                "tipoMovto": 0 if linea.naturaleza.lower() == "cargo" else 1,
+                "tipoMovto": 1 if linea.naturaleza.lower() == "cargo" else 2,
                 "importe": float(round(linea.importe, 2)),
                 "concepto": str(linea.descripcion) if linea.descripcion else "",
                 "referencia": str(getattr(mov, "numero_factura", "")) or "",
