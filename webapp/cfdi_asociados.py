@@ -107,6 +107,35 @@ def aplicar_impuestos_cfdi(mov: dict, cfdis: list) -> None:
         )
 
 
+try:
+    from rule_engine import rfcs_son_equivalentes
+except ImportError:
+    def rfcs_son_equivalentes(rfc1: str, rfc2: str, max_dist: int = 2) -> bool:
+        if not rfc1 or not rfc2:
+            return False
+        r1 = rfc1.replace("-", "").replace(" ", "").strip().upper()
+        r2 = rfc2.replace("-", "").replace(" ", "").strip().upper()
+        if r1 == r2:
+            return True
+        genericos = {"ND", "N/A", "NA", "N.D.", "N.A.", "XAXX010101000", "XEXX010101000", "000000000000", "XXX"}
+        if r1 in genericos or r2 in genericos:
+            return False
+        if not (10 <= len(r1) <= 14 and 10 <= len(r2) <= 14):
+            return False
+        prefix_len = 3 if (len(r1) < 13 or len(r2) < 13) else 4
+        if r1[:prefix_len] != r2[:prefix_len]:
+            return False
+        if len(r1) < len(r2):
+            r1, r2 = r2, r1
+        prev = list(range(len(r2) + 1))
+        for i, c1 in enumerate(r1):
+            curr = [i + 1]
+            for j, c2 in enumerate(r2):
+                curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
+            prev = curr
+        return prev[-1] <= max_dist
+
+
 def rfc_contraparte_cfdi(cfdi) -> str:
     """RFC del proveedor (CFDI recibido) o del cliente (CFDI emitido)."""
     rfc = cfdi["rfc_emisor"] if cfdi["cfdi_tipo"] == "recibido" else cfdi["rfc_receptor"]
@@ -116,19 +145,21 @@ def rfc_contraparte_cfdi(cfdi) -> str:
 def reconciliar_rfc(mov: dict, cfdis: list) -> Optional[str]:
     """Verifica que el movimiento y sus CFDI hablen de la misma contraparte.
 
-    Si coinciden, o el movimiento no traía RFC, deja el RFC del CFDI en el
-    movimiento (así las reglas por RFC pueden hacer match). Regresa el motivo
-    del conflicto, o None si todo está bien. Un conflicto impide clasificar
-    en automático para no mezclar clientes o proveedores.
+    Si coinciden o son equivalentes (con tolerancia a error de dedo menor),
+    deja el RFC del CFDI en el movimiento (así las reglas por RFC pueden hacer match).
+    Regresa el motivo del conflicto, o None si todo está bien.
     """
     rfcs = {rfc_contraparte_cfdi(c) for c in cfdis} - {""}
     if not rfcs:
         return None
     if len(rfcs) > 1:
-        return "El movimiento tiene CFDI confirmados de varias contrapartes: " + ", ".join(sorted(rfcs)) + "."
-    (rfc_cfdi,) = rfcs
+        rfcs_list = list(rfcs)
+        primer_rfc = rfcs_list[0]
+        if not all(rfcs_son_equivalentes(primer_rfc, r) for r in rfcs_list[1:]):
+            return "El movimiento tiene CFDI confirmados de varias contrapartes: " + ", ".join(sorted(rfcs)) + "."
+    rfc_cfdi = list(rfcs)[0]
     rfc_movimiento = (mov.get("rfc_contraparte") or "").strip().upper()
-    if rfc_movimiento and rfc_movimiento != rfc_cfdi:
+    if rfc_movimiento and not rfcs_son_equivalentes(rfc_movimiento, rfc_cfdi):
         return (
             f"El RFC del movimiento ({rfc_movimiento}) no coincide con el del "
             f"CFDI confirmado ({rfc_cfdi})."

@@ -82,10 +82,52 @@ class MatchResult:
     motivo: str      # explicación humana de por qué (o por qué no) hizo match
     nivel: str        # 'rfc' | 'cuenta_bancaria' | 'exacta' | 'contiene' | 'sin_coincidencia'
 
+def distancia_levenshtein(s1: str, s2: str) -> int:
+    """Calcula la distancia de edición (Levenshtein) entre dos cadenas."""
+    if s1 == s2:
+        return 0
+    if len(s1) < len(s2):
+        return distancia_levenshtein(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        for j, c2 in enumerate(s2):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
+        prev = curr
+    return prev[-1]
+
+def rfcs_son_equivalentes(rfc1: str, rfc2: str, max_dist: int = 2) -> bool:
+    """
+    Determina si dos RFCs son idénticos o equivalentes tolerando errores tipográficos menores
+    (caracteres faltantes o permutados de hasta 2 cambios), siempre que compartan
+    el prefijo alfabético de la contraparte.
+    """
+    if not rfc1 or not rfc2:
+        return False
+    r1 = rfc1.replace("-", "").replace(" ", "").strip().upper()
+    r2 = rfc2.replace("-", "").replace(" ", "").strip().upper()
+    if r1 == r2:
+        return True
+
+    genericos = {"ND", "N/A", "NA", "N.D.", "N.A.", "XAXX010101000", "XEXX010101000", "000000000000", "XXX"}
+    if r1 in genericos or r2 in genericos:
+        return False
+
+    if not (10 <= len(r1) <= 14 and 10 <= len(r2) <= 14):
+        return False
+
+    prefix_len = 3 if (len(r1) < 13 or len(r2) < 13) else 4
+    if r1[:prefix_len] != r2[:prefix_len]:
+        return False
+
+    return distancia_levenshtein(r1, r2) <= max_dist
+
 def _es_compatible_tercero(regla: Regla, rfc_mov: str, cuenta_mov: str) -> bool:
     """Verifica si la regla no contradice el RFC o cuenta bancaria del movimiento."""
     if regla.rfc_contraparte and rfc_mov:
-        if regla.rfc_contraparte.strip().upper() != rfc_mov:
+        if not rfcs_son_equivalentes(regla.rfc_contraparte, rfc_mov):
             return False
     if regla.cuenta_bancaria_contraparte and cuenta_mov:
         if regla.cuenta_bancaria_contraparte.strip() != cuenta_mov:
@@ -103,16 +145,22 @@ def encontrar_regla(movimiento: dict, reglas: list[Regla]) -> MatchResult:
     reglas_activas = [r for r in reglas if r.activa]
     reglas_ordenadas = sorted(reglas_activas, key=lambda r: r.prioridad)
 
-    # --- Nivel 1: RFC exacto ---
+    # --- Nivel 1: RFC exacto o equivalente (tolera error tipográfico menor) ---
     for regla in reglas_ordenadas:
-        if regla.rfc_contraparte and rfc_mov and regla.rfc_contraparte.upper() == rfc_mov:
+        if regla.rfc_contraparte and rfc_mov and rfcs_son_equivalentes(regla.rfc_contraparte, rfc_mov):
             if regla.tipo_movimiento and regla.tipo_movimiento != tipo_mov:
                 continue
+            es_exacto = (regla.rfc_contraparte.upper() == rfc_mov)
+            confianza = 100 if es_exacto else 98
+            motivo = (
+                f"El RFC del contraparte ({rfc_mov}) coincide exactamente con la regla '{regla.nombre}'."
+                if es_exacto else
+                f"El RFC del contraparte ({rfc_mov}) coincide con la regla '{regla.nombre}' ({regla.rfc_contraparte}) con tolerancia de error de dedo."
+            )
             return MatchResult(
                 regla=regla,
-                confianza=100,
-                motivo=f"El RFC del contraparte ({rfc_mov}) coincide exactamente "
-                       f"con la regla '{regla.nombre}'.",
+                confianza=confianza,
+                motivo=motivo,
                 nivel="rfc",
             )
 
