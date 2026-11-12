@@ -152,10 +152,21 @@
       <button type="button" id="sdk-btn-cerrar-x" onclick="cerrarModalSdk()" class="text-slate-400 hover:text-white text-xl font-bold">&times;</button>
     </div>
     <div class="p-6 space-y-4">
-      <div id="sdk-info-previa" class="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm space-y-1.5">
-        <div>Empresa CONTPAQi: <strong id="sdk-lbl-empresa" class="font-mono text-marino-900">Cargando...</strong></div>
-        <div>Total de pólizas a enviar: <strong id="sdk-lbl-total" class="text-marino-900">0</strong></div>
-        <div>Pólizas con CFDI (UUID) asociado: <strong id="sdk-lbl-cfdi" class="text-emerald-600">0</strong></div>
+      <div id="sdk-info-previa" class="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm space-y-2">
+        <div class="flex items-center justify-between border-b border-slate-200/80 pb-2">
+          <div>Empresa CONTPAQi: <strong id="sdk-lbl-empresa" class="font-mono text-marino-900">Cargando...</strong></div>
+          <div id="sdk-status-badge" class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+            <span id="sdk-status-dot" class="w-2 h-2 rounded-full bg-slate-400"></span>
+            <span id="sdk-status-texto">Verificando enlace...</span>
+          </div>
+        </div>
+        <div class="flex items-center justify-between text-xs pt-1">
+          <div>Total pólizas: <strong id="sdk-lbl-total" class="text-marino-900">0</strong></div>
+          <div>Con CFDI: <strong id="sdk-lbl-cfdi" class="text-emerald-600">0</strong></div>
+          <button type="button" id="sdk-btn-reconectar" onclick="verificarReconectarSdk()" class="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-bold rounded border border-slate-300 shadow-xs flex items-center gap-1 transition-colors">
+            <span>🔄</span> Verificar / Reconectar
+          </button>
+        </div>
       </div>
 
       <div>
@@ -241,6 +252,22 @@
       lblTot.innerText = data.total_polizas;
       lblCfdi.innerText = `${data.con_cfdi} de ${data.total_polizas}`;
 
+      const badge = document.getElementById('sdk-status-badge');
+      const dot = document.getElementById('sdk-status-dot');
+      const txt = document.getElementById('sdk-status-texto');
+
+      if (data.puente_conectado) {
+        if (badge) badge.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300';
+        if (dot) dot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+        if (txt) txt.innerText = 'Conectado a CONTPAQi';
+      } else {
+        if (badge) badge.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-100 text-rose-800 border border-rose-300';
+        if (dot) dot.className = 'w-2 h-2 rounded-full bg-rose-500';
+        if (txt) txt.innerText = 'Sin conexión';
+        alerta.className = 'px-4 py-3 rounded-lg text-xs font-medium bg-amber-50 text-amber-800 border border-amber-300';
+        alerta.innerHTML = '⚠️ El puente local CONTPAQi no responde en <code>http://host.docker.internal:5005</code>.<br>Presiona el botón <strong>"Verificar / Reconectar"</strong> arriba o revisa si <code>iniciar_puente_contpaqi.bat</code> está corriendo.';
+      }
+
       if (data.total_polizas === 0) {
         lblEstado.innerText = 'No hay pólizas generadas para enviar.';
         lblDet.innerText = 'Genera primero las pólizas en el paso 4.';
@@ -249,12 +276,63 @@
 
       lblEstado.innerText = `Listo para enviar ${data.total_polizas} póliza(s) a CONTPAQi`;
       lblDet.innerText = `Se enviarán en lotes automáticos con sus ${data.con_cfdi} asociación(es) de CFDI.`;
-      btnIniciar.classList.remove('hidden');
+      if (data.puente_conectado) {
+        btnIniciar.classList.remove('hidden');
+      }
     } catch (e) {
       lblEstado.innerText = 'Error de conexión';
       alerta.className = 'px-4 py-3 rounded-lg text-xs font-medium bg-red-50 text-red-700 border border-red-200';
       alerta.innerText = 'No se pudo consultar el resumen de pólizas: ' + e;
     }
+  }
+
+  async function verificarReconectarSdk() {
+    const { empresaId } = window._sdkEstado;
+    if (!empresaId) return;
+
+    const btn = document.getElementById('sdk-btn-reconectar');
+    const dot = document.getElementById('sdk-status-dot');
+    const badge = document.getElementById('sdk-status-badge');
+    const txt = document.getElementById('sdk-status-texto');
+    const alerta = document.getElementById('sdk-alerta');
+    const btnIniciar = document.getElementById('sdk-btn-iniciar');
+
+    if (btn) { btn.disabled = true; btn.innerText = 'Verificando...'; }
+    if (dot) dot.className = 'w-2 h-2 rounded-full bg-amber-500 animate-pulse';
+    if (txt) txt.innerText = 'Probando enlace...';
+
+    try {
+      const res = await fetch(`/empresas/${empresaId}/contpaqi/verificar`);
+      const data = await res.json();
+      if (data.ok) {
+        if (badge) badge.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300';
+        if (dot) dot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+        if (txt) txt.innerText = 'Conectado a CONTPAQi';
+        alerta.className = 'px-4 py-2.5 rounded-lg text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200';
+        alerta.innerText = data.mensaje || '✓ Conexión establecida con éxito con el puente CONTPAQi SDK.';
+        if (window._sdkEstado.polizaIds && window._sdkEstado.polizaIds.length > 0 && !window._sdkEstado.enCurso) {
+          btnIniciar.classList.remove('hidden');
+        }
+      } else {
+        if (badge) badge.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-100 text-rose-800 border border-rose-300';
+        if (dot) dot.className = 'w-2 h-2 rounded-full bg-rose-500';
+        if (txt) txt.innerText = 'Sin conexión';
+        alerta.className = 'px-4 py-2.5 rounded-lg text-xs font-medium bg-rose-50 text-rose-800 border border-rose-200';
+        alerta.innerText = data.mensaje || 'No se pudo conectar al puente CONTPAQi.';
+      }
+    } catch (e) {
+      if (badge) badge.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-100 text-rose-800 border border-rose-300';
+      if (dot) dot.className = 'w-2 h-2 rounded-full bg-rose-500';
+      if (txt) txt.innerText = 'Error red';
+      alerta.className = 'px-4 py-2.5 rounded-lg text-xs font-medium bg-rose-50 text-rose-800 border border-rose-200';
+      alerta.innerText = 'Error al verificar conexión: ' + e;
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerText = '🔄 Verificar / Reconectar'; }
+    }
+  }
+
+  async function verificarReconectarSdkDirecto(empresaId) {
+    iniciarSincronizacionSdk(empresaId);
   }
 
   async function ejecutarEnvioPorLotesSdk() {

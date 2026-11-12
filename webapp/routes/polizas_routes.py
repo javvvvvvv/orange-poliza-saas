@@ -24,7 +24,7 @@ class MovimientoContpaqi:
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for, send_file, send_from_directory
+from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for, send_file, send_from_directory, jsonify
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from auth import login_required, empresa_requerida, csrf_protect, obtener_empresas_del_usuario
@@ -154,6 +154,43 @@ def _construir_movimientos_contpaqi(con, polizas):
         ))
     return movimientos_poliza
 
+@polizas_bp.route("/empresas/<int:empresa_id>/contpaqi/verificar", methods=["GET", "POST"])
+@login_required
+@empresa_requerida
+def contpaqi_verificar_conexion(empresa_id):
+    con = get_connection()
+    empresa = con.execute(
+        "SELECT nombre, base_datos_contpaqi FROM empresas WHERE id = ?", (empresa_id,)
+    ).fetchone()
+    con.close()
+    if not empresa:
+        return jsonify({"ok": False, "mensaje": "Empresa no encontrada."}), 404
+
+    nombre_contpaqi = empresa["base_datos_contpaqi"]
+    try:
+        from exporters.contpaqi_bridge_client import _URL_BASE, _headers
+        import requests
+        resp = requests.get(f"{_URL_BASE}/salud", headers=_headers(), timeout=5)
+        if resp.status_code == 200:
+            return jsonify({
+                "ok": True,
+                "mensaje": f"✓ Conectado exitosamente con CONTPAQi SDK en {_URL_BASE}.",
+                "empresa_contpaqi": nombre_contpaqi or "(Sin asignar)",
+                "puente_url": _URL_BASE
+            })
+        else:
+            return jsonify({
+                "ok": False,
+                "mensaje": f"El puente CONTPAQi respondió con código de estado {resp.status_code}.",
+                "puente_url": _URL_BASE
+            })
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "mensaje": f"No se pudo conectar al puente CONTPAQi: {e}. ¿Está corriendo el servicio?",
+            "puente_url": "http://host.docker.internal:5005"
+        })
+
 @polizas_bp.route("/empresas/<int:empresa_id>/polizas/sdk_resumen", methods=["GET"])
 @login_required
 @empresa_requerida
@@ -203,12 +240,20 @@ def polizas_sdk_resumen(empresa_id):
         """).fetchone()[0]
     con.close()
 
+    puente_ok = False
+    try:
+        from exporters.contpaqi_bridge_client import bridge_disponible
+        puente_ok = bridge_disponible()
+    except Exception:
+        puente_ok = False
+
     return {
         "exito": True,
         "nombre_contpaqi": nombre_contpaqi,
         "poliza_ids": poliza_ids,
         "total_polizas": len(poliza_ids),
         "con_cfdi": con_cfdi,
+        "puente_conectado": puente_ok,
     }
 
 @polizas_bp.route("/empresas/<int:empresa_id>/polizas/exportar_sdk_lote", methods=["POST"])
