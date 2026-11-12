@@ -118,61 +118,40 @@ def polizas_exportar(empresa_id):
     return send_file(resultado["archivo"], as_attachment=True,
                       download_name=os.path.basename(resultado["archivo"]))
 
+from polizas_exportacion import (
+    _cargar_lineas,
+    _cargar_movimientos_de_polizas,
+    _cargar_impuestos_cfdi,
+    _armar_movimiento_poliza,
+)
+from cfdi_asociados import cargar_cfdis_por_movimiento
+
 def _construir_movimientos_contpaqi(con, polizas):
-    movimientos_poliza = []
-    map_lineas = {}
-    map_uuids = {}
     if not polizas:
-        return movimientos_poliza
+        return []
 
-    p_ids = [str(int(p["id"])) for p in polizas]
-    lineas_raw = con.execute(
-        f"SELECT * FROM poliza_lineas WHERE poliza_id IN ({','.join(p_ids)}) ORDER BY poliza_id, orden"
-    ).fetchall()
-    for l in lineas_raw:
-        map_lineas.setdefault(l["poliza_id"], []).append(l)
+    empresa_id = polizas[0]["empresa_id"]
+    empresa = con.execute(
+        "SELECT * FROM empresas WHERE id = ?", (empresa_id,)
+    ).fetchone()
 
-    mov_ids = [str(int(p["mov_id"])) for p in polizas if p.get("mov_id") is not None]
-    if mov_ids:
-        cfdi_raw = con.execute(f"""
-            SELECT cm.movimiento_id, c.uuid, c.uuids_relacionados
-            FROM cfdi_movimiento cm
-            JOIN cfdis c ON c.id = cm.cfdi_id
-            WHERE cm.movimiento_id IN ({','.join(mov_ids)}) AND cm.confirmado = 1
-        """).fetchall()
-        for cf in cfdi_raw:
-            uuid_final = cf["uuid"]
-            if cf.get("uuids_relacionados"):
-                uuids_lista = [u.strip() for u in cf["uuids_relacionados"].split(",") if u.strip()]
-                if uuids_lista:
-                    uuid_final = uuids_lista[0]
-            if uuid_final:
-                lista_u = map_uuids.setdefault(cf["movimiento_id"], [])
-                if uuid_final not in lista_u:
-                    lista_u.append(uuid_final)
+    poliza_ids = [p["id"] for p in polizas]
+    lineas_por_poliza = _cargar_lineas(con, poliza_ids)
+    movimientos_por_poliza = _cargar_movimientos_de_polizas(con, poliza_ids)
 
+    mov_ids = [m["id"] for m in movimientos_por_poliza.values() if m]
+    cfdis_por_movimiento = cargar_cfdis_por_movimiento(con, mov_ids) if mov_ids else {}
+    cfdi_ids = {c["cfdi_id"] for lista in cfdis_por_movimiento.values() for c in lista}
+    impuestos_por_cfdi = _cargar_impuestos_cfdi(con, cfdi_ids) if cfdi_ids else {}
+
+    movimientos_poliza = []
     for p in polizas:
-        lineas = []
-        for l in map_lineas.get(p["id"], []):
-            lineas.append(LineaPoliza(
-                cuenta=l["cuenta"],
-                naturaleza=l["naturaleza"],
-                importe=l["importe"],
-                descripcion=l["descripcion"],
-                segmento_negocio=""
-            ))
-        uuids_poliza = map_uuids.get(p["mov_id"], []) if p.get("mov_id") else []
-        mov = MovimientoContpaqi(
-            fecha=datetime.strptime(p["fecha"], "%Y-%m-%d"),
-            tipo=p["tipo"],
-            numero_poliza=p["numero"],
-            descripcion=p["concepto"] or f"Póliza {p['numero']}",
-            lineas=lineas,
-            numero_factura=p["referencia"] or "",
-            cfdi_uuid=uuids_poliza[0] if len(uuids_poliza) == 1 else None,
-            facturas=[LineaPoliza(uuid=u) for u in uuids_poliza]
-        )
-        movimientos_poliza.append(mov)
+        lineas = lineas_por_poliza.get(p["id"], [])
+        mov = movimientos_por_poliza.get(p["id"])
+        cfdis = cfdis_por_movimiento.get(mov["id"], []) if (mov and "id" in mov and mov["id"] in cfdis_por_movimiento) else []
+        movimientos_poliza.append(_armar_movimiento_poliza(
+            p, lineas, mov, cfdis, impuestos_por_cfdi, empresa
+        ))
     return movimientos_poliza
 
 @polizas_bp.route("/empresas/<int:empresa_id>/polizas/sdk_resumen", methods=["GET"])

@@ -8,13 +8,28 @@ public record MovimientoDto(
     string? Referencia
 );
 
+public record ControlIvaDto(
+    string? Uuid,
+    string? Serie,
+    string? Folio,
+    string? Cuenta,
+    decimal Base,
+    decimal Iva,
+    decimal Total,
+    decimal Tasa,
+    decimal RetencionIva = 0,
+    decimal RetencionIsr = 0
+);
+
 public record PolizaDto(
     string Numero,
     int Tipo,
     string Fecha,
     string Concepto,
     List<MovimientoDto> Movimientos,
-    List<string>? CfdiUuids = null
+    List<string>? CfdiUuids = null,
+    List<ControlIvaDto>? ControlIva = null,
+    bool AfectarIvaFiscal = true
 );
 
 public record ExportarPolizasRequest(string Empresa, List<PolizaDto> Polizas);
