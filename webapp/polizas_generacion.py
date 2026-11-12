@@ -137,10 +137,33 @@ def generar_polizas_pendientes(empresa_id, inicio_ingreso=None, inicio_egreso=No
 
             ultimos[fila["tipo"]] += 1
             numero = ultimos[fila["tipo"]]
+
+            # Determinar si afecta IVA fiscal
+            tiene_linea_iva = False
+            cuentas_iva = {
+                str(cfg.get(k) or "").replace("-", "").replace(" ", "").strip()
+                for k in ["cuenta_iva_acreditable", "cuenta_iva_por_acreditar", "cuenta_iva_trasladado", "cuenta_iva_por_trasladar"]
+            }
+            cuentas_iva.discard("")
+            for l in resultado.lineas:
+                if str(l.cuenta).replace("-", "").replace(" ", "").strip() in cuentas_iva and l.importe > 0:
+                    tiene_linea_iva = True
+                    break
+
+            afectable_mov = fila.get("afectable_impuestos")
+            if afectable_mov is not None and not bool(afectable_mov):
+                afectar_fiscal = 0
+            elif bool(cfdis):
+                afectar_fiscal = 1
+            elif tiene_linea_iva:
+                afectar_fiscal = 1
+            else:
+                afectar_fiscal = 0
+
             cur.execute(
-                """INSERT INTO polizas (empresa_id, tipo, numero, fecha, referencia, concepto, cuadrada, enviada_contpaqi)
-                   VALUES (?, ?, ?, ?, ?, ?, 1, 0)""",
-                (empresa_id, fila["tipo"], numero, fila["fecha"], referencia, concepto),
+                """INSERT INTO polizas (empresa_id, tipo, numero, fecha, referencia, concepto, cuadrada, enviada_contpaqi, afectar_iva_fiscal)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?)""",
+                (empresa_id, fila["tipo"], numero, fila["fecha"], referencia, concepto, afectar_fiscal),
             )
             poliza_id = cur.lastrowid
 

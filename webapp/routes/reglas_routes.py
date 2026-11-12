@@ -414,10 +414,11 @@ def pendiente_asignar_rapido(empresa_id, movimiento_id):
         kwargs["palabras_clave"] = [sugerencia.valor_coincidencia]
 
     regla_id = repo.crear_regla(**kwargs)
+    afectable_val = 1 if (afectable_impuestos and tiene_iva) else 0
     with get_connection() as con:
         con.execute(
-            "UPDATE movimientos SET regla_id = ?, estado_clasificacion = 'manual' WHERE id = ? AND empresa_id = ?",
-            (regla_id, movimiento_id, empresa_id),
+            "UPDATE movimientos SET regla_id = ?, estado_clasificacion = 'manual', afectable_impuestos = ? WHERE id = ? AND empresa_id = ?",
+            (regla_id, afectable_val, movimiento_id, empresa_id),
         )
     try:
         from asociacion_repo import asociar_automaticamente

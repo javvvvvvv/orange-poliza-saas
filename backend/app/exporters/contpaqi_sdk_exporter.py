@@ -87,7 +87,8 @@ def exportar_polizas_via_sdk(movimientos_poliza: list, nombre_interno_empresa: s
                             tasa_val = tasa_raw * 100.0 if tasa_raw <= 1.0 else tasa_raw
 
                     total_f = base_gravada + iva_importe - ret_iva - ret_isr
-                    if base_gravada > 0 or iva_importe > 0:
+                    # Solo incluir si hay IVA gravado o retenciones reales (no agregar F4 si IVA es 0)
+                    if iva_importe > 0 or ret_iva > 0 or ret_isr > 0:
                         control_iva_lista.append({
                             "uuid": getattr(f, "uuid", "") or "",
                             "serie": getattr(f, "serie", "") or "",
@@ -110,7 +111,8 @@ def exportar_polizas_via_sdk(movimientos_poliza: list, nombre_interno_empresa: s
                     tasa_raw = float(getattr(imp, "tasa", 0.16) or 0.16)
                     tasa_val = tasa_raw * 100.0 if tasa_raw <= 1.0 else tasa_raw
 
-                if base_gravada > 0 or iva_importe > 0:
+                # Solo incluir si hay IVA gravado (> 0)
+                if iva_importe > 0:
                     control_iva_lista.append({
                         "uuid": str(getattr(mov, "cfdi_uuid", "") or "").strip().upper(),
                         "serie": "",
@@ -123,6 +125,9 @@ def exportar_polizas_via_sdk(movimientos_poliza: list, nombre_interno_empresa: s
                         "retencionIva": 0.0,
                         "retencionIsr": 0.0,
                     })
+
+        if len(control_iva_lista) == 0:
+            afectar_iva = False
 
         p = {
             "numero": str(mov.numero_poliza),

@@ -151,13 +151,13 @@ def _cuentas_iva(empresa, tipo_poliza) -> set:
     return {_sin_guiones(empresa.get(k)) for k in claves} - {""}
 
 
-def _impuesto_estimado(poliza, lineas, movimiento, empresa) -> ImpuestoPoliza:
+def _impuesto_estimado(poliza, lineas, movimiento, empresa):
     """Impuesto de una póliza sin CFDI, leído de la línea de IVA que ya tiene la póliza."""
     total = redondear_moneda(movimiento["total"])
     cuentas_iva = _cuentas_iva(empresa, poliza["tipo"])
     linea_iva = next((l for l in lineas if _sin_guiones(l.cuenta) in cuentas_iva), None)
-    if linea_iva is None:
-        return ImpuestoPoliza(base=total, importe=MontoDecimal("0.00"), tasa=MontoDecimal("0.0"))
+    if linea_iva is None or linea_iva.importe <= 0:
+        return None
     importe = redondear_moneda(linea_iva.importe)
     return ImpuestoPoliza(
         base=redondear_moneda(total - importe),
@@ -174,18 +174,30 @@ def _armar_movimiento_poliza(poliza, lineas, movimiento, cfdis, impuestos_por_cf
 
     afectar_iva_fiscal = True
     if hasattr(poliza, "keys") and "afectar_iva_fiscal" in poliza.keys():
-        afectar_iva_fiscal = bool(poliza["afectar_iva_fiscal"])
+        if poliza["afectar_iva_fiscal"] is not None and not bool(poliza["afectar_iva_fiscal"]):
+            afectar_iva_fiscal = False
+
+    if movimiento and hasattr(movimiento, "keys") and "afectable_impuestos" in movimiento.keys():
+        if movimiento["afectable_impuestos"] is not None and not bool(movimiento["afectable_impuestos"]):
+            afectar_iva_fiscal = False
 
     if cfdis:
         cuenta_banco = _sin_guiones(movimiento["cuenta_banco"]) if movimiento else ""
         facturas, cfdi_impuestos = _facturas_desde_cfdis(cfdis, impuestos_por_cfdi)
         if len(facturas) == 1:
             cfdi_uuid, cfdi_serie, cfdi_folio = facturas[0].uuid, facturas[0].serie, facturas[0].folio
-    elif movimiento is not None and (
-        movimiento["afectable_impuestos"] is None or movimiento["afectable_impuestos"]
-    ):
+    elif movimiento is not None and afectar_iva_fiscal:
         cuenta_banco = _sin_guiones(movimiento["cuenta_banco"])
-        cfdi_impuestos = [_impuesto_estimado(poliza, lineas, movimiento, empresa)]
+        imp_est = _impuesto_estimado(poliza, lineas, movimiento, empresa)
+        if imp_est is not None:
+            cfdi_impuestos = [imp_est]
+        else:
+            # Si la póliza no tiene línea de IVA, la operación no causa ni acredita IVA
+            afectar_iva_fiscal = False
+            cfdi_impuestos = []
+    else:
+        cuenta_banco = _sin_guiones(movimiento["cuenta_banco"]) if movimiento else ""
+        cfdi_impuestos = []
 
     if not afectar_iva_fiscal:
         cfdi_impuestos = []
@@ -193,7 +205,7 @@ def _armar_movimiento_poliza(poliza, lineas, movimiento, cfdis, impuestos_por_cf
             f.impuestos = []
 
     tiene_cfdi = bool(cfdi_uuid or facturas)
-    tiene_iva_flag = bool(tiene_cfdi or (movimiento and (movimiento["afectable_impuestos"] is None or bool(movimiento["afectable_impuestos"]))))
+    tiene_iva_flag = bool(afectar_iva_fiscal and (tiene_cfdi or bool(cfdi_impuestos)))
 
     return MovimientoPoliza(
         numero_poliza=poliza["numero"],
